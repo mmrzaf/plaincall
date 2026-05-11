@@ -1,0 +1,14 @@
+/bin/
+node_modules/
+.env
+deploy/.env
+deploy/turn-certs/*
+!deploy/turn-certs/.gitkeep
+web/dist/*
+!web/dist/.gitkeep
+e2e/node_modules/
+e2e/test-results/
+e2e/playwright-report/
+*.log
+.DS_Store
+coverage.out
