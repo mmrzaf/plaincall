@@ -1,0 +1,13 @@
+.git
+.github
+bin
+deploy
+docs
+web/node_modules
+web/dist
+*.md
+e2e
+.gitman.yml
+.env
+*.log
+.DS_Store
