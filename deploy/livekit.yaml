@@ -1,0 +1,33 @@
+# LiveKit server settings. The API key and secret are not set here; Compose
+# passes them in through the LIVEKIT_KEYS environment variable.
+
+port: 7880
+
+rtc:
+  tcp_port: 7881
+  udp_port: 7882
+  use_external_ip: true
+
+room:
+  # People per room. Raise it if you host larger meetups; bandwidth grows
+  # with every extra participant.
+  max_participants: 20
+  # Seconds an empty room lingers. A room's lock is forgotten when it closes.
+  empty_timeout: 120
+  departure_timeout: 20
+
+logging:
+  level: info
+  json: true
+
+# TURN relays calls for people on networks that block direct media. Enable it
+# only if some people cannot connect. It also needs a certificate for the TURN
+# domain and the extra ports in compose.turn.yml. See docs/DEPLOYMENT.md.
+#
+# turn:
+#   enabled: true
+#   domain: turn.example.com
+#   tls_port: 5349
+#   udp_port: 443
+#   cert_file: /turn-certs/tls.crt
+#   key_file: /turn-certs/tls.key
