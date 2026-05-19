@@ -1,0 +1,69 @@
+# PlainCall behind an existing Traefik. See docs/DEPLOYMENT.md.
+#
+# Traefik must have a "websecure" entry point with a working certificate
+# setup, and share an external Docker network called "proxy" with this stack.
+
+services:
+  plaincall:
+    image: ${PLAINCALL_IMAGE:?Set PLAINCALL_IMAGE in .env}
+    restart: unless-stopped
+    environment:
+      PLAINCALL_KEYS: ${PLAINCALL_KEYS:?Set PLAINCALL_KEYS in .env}
+      PLAINCALL_TRUST_PROXY_HEADERS: "true"
+      LIVEKIT_URL: wss://${PLAINCALL_RTC_DOMAIN:?Set PLAINCALL_RTC_DOMAIN in .env}
+      LIVEKIT_API_URL: http://livekit:7880
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:?Set LIVEKIT_API_KEY in .env}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?Set LIVEKIT_API_SECRET in .env}
+    depends_on:
+      - livekit
+    healthcheck:
+      test: ["CMD", "/plaincall", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - internal
+      - proxy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=proxy
+      - traefik.http.routers.plaincall.rule=Host(`${PLAINCALL_DOMAIN:?Set PLAINCALL_DOMAIN in .env}`)
+      - traefik.http.routers.plaincall.entrypoints=websecure
+      - traefik.http.routers.plaincall.tls=true
+      - traefik.http.services.plaincall.loadbalancer.server.port=8080
+
+  livekit:
+    image: livekit/livekit-server:${LIVEKIT_VERSION:-v1.13.7}
+    restart: unless-stopped
+    command: ["--config", "/etc/livekit.yaml"]
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    ports:
+      # Media. These go straight to LiveKit, not through Traefik.
+      - "7881:7881/tcp"
+      - "7882:7882/udp"
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - internal
+      - proxy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=proxy
+      - traefik.http.routers.plaincall-rtc.rule=Host(`${PLAINCALL_RTC_DOMAIN}`)
+      - traefik.http.routers.plaincall-rtc.entrypoints=websecure
+      - traefik.http.routers.plaincall-rtc.tls=true
+      - traefik.http.services.plaincall-rtc.loadbalancer.server.port=7880
+
+networks:
+  internal:
+  proxy:
+    external: true

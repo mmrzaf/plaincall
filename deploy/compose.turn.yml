@@ -1,0 +1,13 @@
+# Adds the ports and certificate that LiveKit's built-in TURN relay needs.
+# Use it together with compose.yml, after enabling the turn section in
+# livekit.yaml:
+#
+#   docker compose -f compose.yml -f compose.turn.yml up -d
+
+services:
+  livekit:
+    ports:
+      - "443:443/udp"
+      - "5349:5349/tcp"
+    volumes:
+      - ./turn-certs:/turn-certs:ro
