@@ -1,0 +1,181 @@
+name: ci
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+  # The release workflow runs the same checks on the tag it publishes.
+  workflow_call:
+    inputs:
+      ref:
+        description: Git ref to check out. Empty means the ref that triggered the run.
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.ref }}
+  cancel-in-progress: true
+
+env:
+  GOLANGCI_LINT_VERSION: v2.13.2
+  GOVULNCHECK_VERSION: v1.6.0
+  LIVEKIT_IMAGE: livekit/livekit-server:v1.13.7
+
+jobs:
+  go:
+    name: Go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Formatting
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Shell scripts
+        run: shellcheck scripts/*.sh
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          args: --timeout=5m
+
+      - name: Vulnerability scan
+        run: go run golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }} ./...
+
+      - name: Tests with the race detector
+        run: go test -race -count=1 ./...
+
+  web:
+    name: Web app
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run build
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
+
+  browser:
+    name: Real LiveKit and browsers
+    runs-on: ubuntu-latest
+    env:
+      LIVEKIT_URL: ws://127.0.0.1:7880
+      LIVEKIT_API_URL: http://127.0.0.1:7880
+      LIVEKIT_API_KEY: devkey
+      LIVEKIT_API_SECRET: secret
+      PLAINCALL_URL: http://127.0.0.1:8080
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            e2e/package-lock.json
+
+      - name: Start LiveKit
+        run: |
+          docker run -d --name livekit --network host "$LIVEKIT_IMAGE" --dev
+          for _ in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:7880/ >/dev/null 2>&1 && exit 0
+            sleep 1
+          done
+          docker logs livekit
+          exit 1
+
+      - name: Go tests against LiveKit
+        env:
+          LIVEKIT_TEST_URL: http://127.0.0.1:7880
+        run: go test -count=1 ./internal/rtc
+
+      - name: Build PlainCall
+        run: |
+          (cd web && npm ci && npm run build)
+          go build -trimpath -o bin/plaincall ./cmd/plaincall
+
+      - name: Start PlainCall
+        run: |
+          key="$(openssl rand -hex 16)"
+          echo "PLAINCALL_KEY=$key" >> "$GITHUB_ENV"
+          PLAINCALL_ADDR=127.0.0.1:8080 PLAINCALL_KEYS="ci:$key" ./bin/plaincall > plaincall.log 2>&1 &
+          for _ in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1 && exit 0
+            sleep 1
+          done
+          cat plaincall.log
+          exit 1
+
+      - name: Install browsers
+        working-directory: e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Browser tests
+        working-directory: e2e
+        run: npx playwright test --project=chromium
+
+      - name: Show logs after a failure
+        if: failure()
+        run: |
+          cat plaincall.log || true
+          docker logs livekit || true
+
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: browser-test-results
+          path: e2e/test-results
+          if-no-files-found: ignore
+
+  image:
+    name: Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Build and check the image
+        run: |
+          set -euo pipefail
+          version="${GITHUB_SHA::12}"
+          docker build --build-arg VERSION="$version" -t plaincall:ci .
+          test "$(docker run --rm plaincall:ci version)" = "$version"
