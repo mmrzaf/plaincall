@@ -1,0 +1,87 @@
+# PlainCall on Gitman. Every run builds plaincall:<version> on the host's
+# Docker; a v* tag also deploys it to production.
+#
+# Ref rules: develop and main need run and docker; v* tags need run,
+# docker and ship.
+#
+# The deployment directory holds a .env with the settings from
+# deploy/.env.example. Each deploy refreshes docker-compose.yml and
+# livekit.yaml there from this repository and points PLAINCALL_IMAGE at the
+# image it just built.
+image: docker:29-cli
+docker: true
+requires:
+  - node:22-alpine
+  - golang:1.27-alpine
+  - gcr.io/distroless/static-debian12:nonroot
+
+env:
+  DOCKER_BUILDKIT: "1"
+  GOPROXY: https://mirror.abrha.net/repository/go/,direct
+
+targets:
+  production:
+    tag: "v*"
+    env:
+      DEPLOY_DIR: /srv/apps/plaincall
+
+steps:
+  - name: build image
+    run: |
+      set -eu
+      image="plaincall:$GITMAN_VERSION"
+      docker build \
+        --pull=false \
+        --build-arg GOPROXY="$GOPROXY" \
+        --build-arg VERSION="$GITMAN_VERSION" \
+        --label "org.opencontainers.image.title=plaincall" \
+        --label "org.opencontainers.image.revision=$GITMAN_COMMIT" \
+        --label "org.opencontainers.image.ref.name=$GITMAN_REF" \
+        --label "org.opencontainers.image.version=$GITMAN_VERSION" \
+        --tag "$image" \
+        .
+      echo "image=$image" >> "$GITMAN_SUMMARY"
+
+  - name: check image
+    run: |
+      set -eu
+      image="plaincall:$GITMAN_VERSION"
+      test "$(docker run --rm "$image" version)" = "$GITMAN_VERSION"
+      revision="$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")"
+      test "$revision" = "$GITMAN_COMMIT"
+
+  - name: deploy
+    when: production
+    run: |
+      set -eu
+      image="plaincall:$GITMAN_VERSION"
+      compose="$(cat deploy/compose.yml)"
+      livekit="$(cat deploy/livekit.yaml)"
+      docker run --rm \
+        --network host \
+        --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock \
+        --mount type=bind,src=/srv,dst=/srv \
+        --env DOCKER_HOST=unix:///var/run/docker.sock \
+        --env DEPLOY_DIR="$DEPLOY_DIR" \
+        --env IMAGE_REF="$image" \
+        --env COMPOSE_CONTENT="$compose" \
+        --env LIVEKIT_CONTENT="$livekit" \
+        docker:29-cli sh -c '
+          set -eu
+          if [ ! -f "$DEPLOY_DIR/.env" ]; then
+            echo "Missing $DEPLOY_DIR/.env" >&2
+            exit 1
+          fi
+          printf "%s\n" "$COMPOSE_CONTENT" > "$DEPLOY_DIR/docker-compose.yml"
+          printf "%s\n" "$LIVEKIT_CONTENT" > "$DEPLOY_DIR/livekit.yaml"
+          if grep -q "^PLAINCALL_IMAGE=" "$DEPLOY_DIR/.env"; then
+            sed -i "s#^PLAINCALL_IMAGE=.*#PLAINCALL_IMAGE=$IMAGE_REF#" "$DEPLOY_DIR/.env"
+          else
+            printf "PLAINCALL_IMAGE=%s\n" "$IMAGE_REF" >> "$DEPLOY_DIR/.env"
+          fi
+          docker compose \
+            --project-directory "$DEPLOY_DIR" \
+            --env-file "$DEPLOY_DIR/.env" \
+            -f "$DEPLOY_DIR/docker-compose.yml" \
+            up -d --remove-orphans
+        '
