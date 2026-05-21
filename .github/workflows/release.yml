@@ -1,0 +1,238 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Existing release tag to publish, for example v1.0.0'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  APP_NAME: plaincall
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  metadata:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      clean_version: ${{ steps.meta.outputs.clean_version }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+    steps:
+      - id: meta
+        shell: bash
+        env:
+          DISPATCHED: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="${DISPATCHED:-$GITHUB_REF_NAME}"
+          if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release version must look like v1.2.3 or v1.2.3-beta.1: $version" >&2
+            exit 1
+          fi
+          prerelease=false
+          if [[ "$version" == *-* ]]; then
+            prerelease=true
+          fi
+          {
+            echo "version=$version"
+            echo "clean_version=${version#v}"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+  verify:
+    name: Verify
+    needs: metadata
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.metadata.outputs.version }}
+
+  web:
+    name: Build web app
+    needs: [metadata, verify]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.metadata.outputs.version }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: web-dist
+          path: web/dist
+          include-hidden-files: true
+          if-no-files-found: error
+
+  binaries:
+    name: Binary ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: [metadata, web]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.metadata.outputs.version }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+          path: web/dist
+
+      - name: Build
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
+            -o "dist/${APP_NAME}_${GOOS}_${GOARCH}" ./cmd/plaincall
+
+      - name: Check the binary
+        if: matrix.goarch == 'amd64'
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: test "$("dist/${APP_NAME}_linux_amd64" version)" = "$VERSION"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: binary-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+
+  image:
+    name: Publish image
+    needs: [metadata, verify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.metadata.outputs.version }}
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            latest=false
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.metadata.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.metadata.outputs.version }},enable=${{ needs.metadata.outputs.prerelease == 'false' }}
+            type=raw,value=latest,enable=${{ needs.metadata.outputs.prerelease == 'false' }}
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ needs.metadata.outputs.version }}
+
+  image-archive:
+    name: Build image archive
+    needs: [metadata, verify]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.metadata.outputs.version }}
+
+      - name: Build and save the linux/amd64 image
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+          CLEAN_VERSION: ${{ needs.metadata.outputs.clean_version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          image="${APP_NAME}:${CLEAN_VERSION}"
+          docker build --platform linux/amd64 --build-arg VERSION="$VERSION" -t "$image" .
+          test "$(docker run --rm "$image" version)" = "$VERSION"
+          docker save "$image" | gzip -9 > "dist/${APP_NAME}-docker-image-linux-amd64-${CLEAN_VERSION}.tar.gz"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: image-archive
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: GitHub release
+    needs: [metadata, binaries, image, image-archive]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: release
+          pattern: '{binary-*,image-archive}'
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: release
+        run: |
+          set -euo pipefail
+          sha256sum -- * | sort -k2 > SHA256SUMS
+          ls -la
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.metadata.outputs.version }}
+          name: PlainCall ${{ needs.metadata.outputs.version }}
+          prerelease: ${{ needs.metadata.outputs.prerelease == 'true' }}
+          generate_release_notes: true
+          body: |
+            Image: `${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.metadata.outputs.clean_version }}`
+
+            The binaries include the web app. Set the variables in the README's configuration table and run one. `SHA256SUMS` lists checksums for every file.
+          files: release/*
