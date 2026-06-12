@@ -1,0 +1,82 @@
+services:
+  web:
+    image: ghcr.io/mmrzaf/plaincall:${PLAINCALL_VERSION:?PLAINCALL_VERSION missing}
+    container_name: plaincall-web
+    expose:
+      - "8080"
+    environment:
+      - PLAINCALL_PORT=8080
+      - PLAINCALL_PUBLIC_URL=https://${PLAINCALL_DOMAIN:?PLAINCALL_DOMAIN missing}
+      - LIVEKIT_PUBLIC_URL=wss://${PLAINCALL_RTC_DOMAIN:?PLAINCALL_RTC_DOMAIN missing}
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:?LIVEKIT_API_KEY missing}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET missing}
+      - PLAINCALL_SECRET_KEY=${PLAINCALL_SECRET_KEY:?PLAINCALL_SECRET_KEY missing}
+      - PLAINCALL_ROOM_TTL=${PLAINCALL_ROOM_TTL:-24h}
+      - PLAINCALL_TOKEN_TTL=${PLAINCALL_TOKEN_TTL:-30m}
+      - PLAINCALL_TRUST_PROXY_HEADERS=true
+    networks:
+      - plaincall-net
+      - proxy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.plaincall.rule=Host(`${PLAINCALL_DOMAIN:?PLAINCALL_DOMAIN missing}`)"
+      - "traefik.http.routers.plaincall.entrypoints=websecure"
+      - "traefik.http.routers.plaincall.tls=true"
+      - "traefik.http.services.plaincall.loadbalancer.server.port=8080"
+      - "traefik.http.routers.plaincall.middlewares=security-headers@file,rate-limit@file,arvancloud-only@file"
+
+  livekit:
+    image: livekit/livekit-server:${LIVEKIT_VERSION:-v1.13.1}
+    container_name: plaincall-livekit
+    expose:
+      - "7880"
+    ports:
+      - "7881:7881/tcp"
+      - "7882:7882/udp"
+    environment:
+      LIVEKIT_CONFIG: |
+        port: 7880
+        rtc:
+          tcp_port: 7881
+          udp_port: 7882
+          use_external_ip: true
+        room:
+          empty_timeout: 300
+          departure_timeout: 20
+          max_participants: 8
+        logging:
+          level: info
+          json: true
+        keys:
+          ${LIVEKIT_API_KEY:?LIVEKIT_API_KEY missing}: ${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET missing}
+    networks:
+      - plaincall-net
+      - proxy
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.plaincall-rtc.rule=Host(`${PLAINCALL_RTC_DOMAIN:?PLAINCALL_RTC_DOMAIN missing}`)"
+      - "traefik.http.routers.plaincall-rtc.entrypoints=websecure"
+      - "traefik.http.routers.plaincall-rtc.tls=true"
+      - "traefik.http.services.plaincall-rtc.loadbalancer.server.port=7880"
+
+networks:
+  plaincall-net:
+  proxy:
+    external: true
