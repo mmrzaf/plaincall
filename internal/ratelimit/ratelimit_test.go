@@ -10,7 +10,9 @@ func TestAllowResetsAfterWindow(t *testing.T) {
 	limiter := New(2, time.Minute, 10)
 	limiter.now = func() time.Time { return now }
 
-	if !limiter.Allow("client") || !limiter.Allow("client") {
+	firstAllowed := limiter.Allow("client")
+	secondAllowed := limiter.Allow("client")
+	if !firstAllowed || !secondAllowed {
 		t.Fatal("Allow() rejected request within limit")
 	}
 	if limiter.Allow("client") {
