@@ -15,7 +15,9 @@ env:
 
 jobs:
   build-binaries:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
     runs-on: ubuntu-latest
+
     strategy:
       fail-fast: false
       matrix:
@@ -38,7 +40,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -54,8 +56,8 @@ jobs:
           cache-dependency-path: web/package-lock.json
 
       - name: Build frontend
+        working-directory: web
         run: |
-          cd web
           npm ci
           npm run build
 
@@ -66,35 +68,45 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: |
           mkdir -p dist
-          go build -trimpath -ldflags "-s -w" \
-            -o "dist/plaincall_${{ matrix.goos }}_${{ matrix.goarch }}${{ matrix.ext }}" ./cmd/plaincall
 
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+          go build \
+            -trimpath \
+            -ldflags "-s -w" \
+            -o "dist/plaincall_${{ matrix.goos }}_${{ matrix.goarch }}${{ matrix.ext }}" \
+            ./cmd/plaincall
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v7
         with:
           name: plaincall-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dist/*
+          path: dist/plaincall_*
           if-no-files-found: error
+          retention-days: 7
 
   docker:
+    name: Build and push Docker image
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Docker metadata
+      - name: Generate Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
@@ -103,38 +115,66 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
         with:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   release:
+    name: Publish GitHub release
     runs-on: ubuntu-latest
+
     needs:
       - build-binaries
       - docker
 
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+      - name: Download release artifacts
+        uses: actions/download-artifact@v8
         with:
-          path: dist
+          path: release_dist
+          pattern: plaincall-*
+          merge-multiple: true
 
-      - name: Flatten dist directory
+      - name: Generate checksums
+        working-directory: release_dist
         run: |
-          mkdir -p release_dist
-          find dist -maxdepth 3 -type f -print -exec cp -f {} release_dist/ \;
-          (cd release_dist && sha256sum plaincall_* > SHA256SUMS)
-          ls -la release_dist
+          set -euo pipefail
 
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+          test -f plaincall_linux_amd64
+          test -f plaincall_linux_arm64
+          test -f plaincall_darwin_amd64
+          test -f plaincall_darwin_arm64
+          test -f plaincall_windows_amd64.exe
+
+          sha256sum plaincall_* > SHA256SUMS
+
+          echo "Release assets:"
+          ls -lah
+
+          echo
+          echo "Checksums:"
+          cat SHA256SUMS
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v3
         with:
+          generate_release_notes: true
           body: |
             Docker image:
-            `${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}`
 
-          files: release_dist/*
+            `${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}`
+          files: |
+            release_dist/plaincall_linux_amd64
+            release_dist/plaincall_linux_arm64
+            release_dist/plaincall_darwin_amd64
+            release_dist/plaincall_darwin_arm64
+            release_dist/plaincall_windows_amd64.exe
+            release_dist/SHA256SUMS
