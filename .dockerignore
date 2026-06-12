@@ -1,0 +1,8 @@
+.git
+.env
+deploy/.env
+bin
+plaincall
+web/node_modules
+*.log
+.DS_Store
