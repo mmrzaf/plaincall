@@ -25,6 +25,12 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
+      - name: Build frontend
+        run: |
+          cd web
+          npm ci
+          npm run build
+
       - name: Fmt
         run: |
           files=$(gofmt -l .)
@@ -46,11 +52,14 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: Build frontend
+      - name: Shell syntax
         run: |
-          cd web
-          npm ci
-          npm run build
+          for script in scripts/*.sh; do
+            sh -n "$script"
+          done
+
+      - name: Race tests
+        run: go test -race ./...
 
       - name: Build binary
         run: go build -trimpath -o bin/plaincall ./cmd/plaincall

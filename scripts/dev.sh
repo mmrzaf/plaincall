@@ -16,6 +16,7 @@ EOF_HELP
   exit 1
 fi
 
+PORT="${PLAINCALL_PORT:-8080}"
 LOG_FILE="${TMPDIR:-/tmp}/plaincall-livekit.log"
 livekit-server --dev >"$LOG_FILE" 2>&1 &
 LIVEKIT_PID=$!
@@ -27,5 +28,5 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 printf 'LiveKit dev server started. Log: %s\n' "$LOG_FILE"
-printf 'PlainCall: http://localhost:8080\n'
-PLAINCALL_DEV=true go run ./cmd/plaincall
+printf 'PlainCall: http://localhost:%s\n' "$PORT"
+PLAINCALL_DEV=true PLAINCALL_PORT="$PORT" go run ./cmd/plaincall
