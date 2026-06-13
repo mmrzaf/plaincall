@@ -33,11 +33,11 @@ func TestCreateRoomThenIssueToken(t *testing.T) {
 	if err := json.NewDecoder(createResponse.Body).Decode(&room); err != nil {
 		t.Fatalf("decode create room response: %v", err)
 	}
-	if room.Room == "" || !strings.Contains(room.URL, room.Room) {
+	if room.Room == "" || !strings.Contains(room.URL, "/join#") || !strings.Contains(room.URL, room.Room) {
 		t.Fatalf("unexpected room response: %#v", room)
 	}
 
-	joinBody := `{"room_name":"` + room.Room + `","participant_name":"  Alice   Example "}`
+	joinBody := `{"room_code":"` + room.Room + `","participant_name":"  Alice   Example "}`
 	join := httptest.NewRequest(http.MethodPost, "/api/token", strings.NewReader(joinBody))
 	join.Header.Set("Content-Type", "application/json")
 	join.Header.Set("Origin", "https://call.example.com")
@@ -58,7 +58,7 @@ func TestCreateRoomThenIssueToken(t *testing.T) {
 func TestIssueTokenRejectsUnknownRoomAndOrigin(t *testing.T) {
 	handler := testServer(t).Handler()
 
-	request := httptest.NewRequest(http.MethodPost, "/api/token", strings.NewReader(`{"room_name":"r_invalid","participant_name":"Alice"}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/token", strings.NewReader(`{"room_code":"invalid","participant_name":"Alice"}`))
 	request.Header.Set("Origin", "https://call.example.com")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -85,9 +85,9 @@ func TestHealthAndSPAFallback(t *testing.T) {
 	}
 
 	page := httptest.NewRecorder()
-	handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/r/example", nil))
+	handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/join", nil))
 	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "PlainCall") {
-		t.Fatalf("GET /r/example = %d %q", page.Code, page.Body.String())
+		t.Fatalf("GET /join = %d %q", page.Code, page.Body.String())
 	}
 }
 
@@ -111,4 +111,13 @@ func testServer(t *testing.T) *Server {
 		},
 	}
 	return New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), static)
+}
+
+func TestSafeLogPathRedactsLegacyBearerLink(t *testing.T) {
+	if got := safeLogPath("/r/r.secret.exp.signature"); got != "/r/[redacted]" {
+		t.Fatalf("safeLogPath() = %q", got)
+	}
+	if got := safeLogPath("/join"); got != "/join" {
+		t.Fatalf("safeLogPath() = %q", got)
+	}
 }

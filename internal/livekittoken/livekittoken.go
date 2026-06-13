@@ -39,16 +39,10 @@ type videoGrant struct {
 }
 
 func New(apiKey, apiSecret string, ttl time.Duration) *Issuer {
-	return &Issuer{
-		apiKey:    apiKey,
-		apiSecret: []byte(apiSecret),
-		ttl:       ttl,
-		now:       time.Now,
-		rand:      rand.Reader,
-	}
+	return &Issuer{apiKey: apiKey, apiSecret: []byte(apiSecret), ttl: ttl, now: time.Now, rand: rand.Reader}
 }
 
-func (i *Issuer) Issue(room, displayName string) (token string, identity string, err error) {
+func (i *Issuer) Issue(room, displayName string, invitationExpiresAt time.Time) (token string, identity string, err error) {
 	identity, err = randomID(i.rand, "p_", 12)
 	if err != nil {
 		return "", "", fmt.Errorf("generate participant identity: %w", err)
@@ -59,21 +53,18 @@ func (i *Issuer) Issue(room, displayName string) (token string, identity string,
 	}
 
 	now := i.now().UTC()
+	expiresAt := now.Add(i.ttl)
+	if !invitationExpiresAt.IsZero() && invitationExpiresAt.Before(expiresAt) {
+		expiresAt = invitationExpiresAt
+	}
+	if !now.Before(expiresAt) {
+		return "", "", fmt.Errorf("invitation expired")
+	}
 	payload := claims{
-		Issuer:    i.apiKey,
-		Subject:   identity,
-		Name:      displayName,
-		NotBefore: now.Add(-5 * time.Second).Unix(),
-		ExpiresAt: now.Add(i.ttl).Unix(),
-		JWTID:     jwtID,
-		Video: videoGrant{
-			RoomJoin:       true,
-			Room:           room,
-			CanPublish:     true,
-			CanSubscribe:   true,
-			CanPublishData: false,
-			PublishSources: []string{"camera", "microphone", "screen_share", "screen_share_audio"},
-		},
+		Issuer: i.apiKey, Subject: identity, Name: displayName,
+		NotBefore: now.Add(-5 * time.Second).Unix(), ExpiresAt: expiresAt.Unix(), JWTID: jwtID,
+		Video: videoGrant{RoomJoin: true, Room: room, CanPublish: true, CanSubscribe: true, CanPublishData: false,
+			PublishSources: []string{"camera", "microphone", "screen_share", "screen_share_audio"}},
 	}
 
 	header := map[string]string{"alg": "HS256", "typ": "JWT"}
@@ -88,8 +79,7 @@ func (i *Issuer) Issue(room, displayName string) (token string, identity string,
 	unsigned := encodedHeader + "." + encodedPayload
 	mac := hmac.New(sha256.New, i.apiSecret)
 	_, _ = mac.Write([]byte(unsigned))
-	signature := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-	return unsigned + "." + signature, identity, nil
+	return unsigned + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), identity, nil
 }
 
 func randomID(reader io.Reader, prefix string, size int) (string, error) {

@@ -38,11 +38,13 @@ type Server struct {
 
 type createRoomResponse struct {
 	Room      string `json:"room"`
+	Code      string `json:"code"`
 	URL       string `json:"url"`
-	ExpiresAt string `json:"expires_at"`
+	ExpiresAt string `json:"expires_at,omitempty"`
 }
 
 type tokenRequest struct {
+	RoomCode        string `json:"room_code"`
 	RoomName        string `json:"room_name"`
 	ParticipantName string `json:"participant_name"`
 }
@@ -94,17 +96,17 @@ func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	room, expiresAt, err := s.rooms.Create()
+	room, err := s.rooms.Create()
 	if err != nil {
-		s.logger.Error("create room link", "error", err)
+		s.logger.Error("create room code", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "could not create room"})
 		return
 	}
 
 	writeJSON(w, http.StatusCreated, createRoomResponse{
-		Room:      room,
-		URL:       strings.TrimSuffix(s.cfg.PublicURL, "/") + "/r/" + url.PathEscape(room),
-		ExpiresAt: expiresAt.UTC().Format(time.RFC3339),
+		Room: room.Code,
+		Code: room.Code,
+		URL:  strings.TrimSuffix(s.cfg.PublicURL, "/") + "/join#" + url.PathEscape(room.Code),
 	})
 }
 
@@ -124,10 +126,14 @@ func (s *Server) issueToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	request.RoomName = strings.TrimSpace(request.RoomName)
+	roomCode := strings.TrimSpace(request.RoomCode)
+	if roomCode == "" {
+		roomCode = strings.TrimSpace(request.RoomName) // Alpha 1 client compatibility.
+	}
 	request.ParticipantName = normalizeName(request.ParticipantName)
-	if err := s.rooms.Verify(request.RoomName); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "room link is invalid or expired"})
+	room, err := s.rooms.Resolve(roomCode)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "room code is invalid or expired"})
 		return
 	}
 	if err := validateDisplayName(request.ParticipantName); err != nil {
@@ -135,7 +141,7 @@ func (s *Server) issueToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, _, err := s.tokens.Issue(request.RoomName, request.ParticipantName)
+	token, _, err := s.tokens.Issue(room.LiveKitRoom, request.ParticipantName, room.ExpiresAt)
 	if err != nil {
 		s.logger.Error("issue participant token", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "could not join room"})
@@ -228,12 +234,19 @@ func (s *Server) requestLogger(next http.Handler) http.Handler {
 		}
 		s.logger.Info("http request",
 			"method", r.Method,
-			"path", r.URL.Path,
+			"path", safeLogPath(r.URL.Path),
 			"status", recorder.status,
 			"duration_ms", time.Since(started).Milliseconds(),
 			"client_ip", s.clientIP(r),
 		)
 	})
+}
+
+func safeLogPath(requestPath string) string {
+	if strings.HasPrefix(requestPath, "/r/") {
+		return "/r/[redacted]"
+	}
+	return requestPath
 }
 
 func (s *Server) recoverer(next http.Handler) http.Handler {
