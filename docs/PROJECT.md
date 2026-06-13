@@ -5,7 +5,7 @@
 **PlainCall is a lightweight, self-hosted browser calling app.**
 
 ```text
-A room. A link. A call.
+A room. A code. A call.
 ```
 
 Its job is to make small-team calls work with minimal setup and minimal operational complexity.
@@ -14,61 +14,59 @@ Its job is to make small-team calls work with minimal setup and minimal operatio
 
 > Join quickly, hear everyone clearly, survive ordinary network interruptions, and consume reasonable bandwidth and CPU.
 
-Audio reliability has priority over video quality.
+Audio reliability has priority over video quality unless the user explicitly chooses a video-focused mode.
 
 ## Product rules
 
 1. Calls first. Every feature must improve the call experience directly.
-2. Audio is sacred. Video degrades before audio becomes unusable.
+2. Speech remains usable before video remains beautiful.
 3. Guests join without accounts.
-4. Rooms are ephemeral and stateless from PlainCall's perspective.
-5. v0.1 targets 2–8 participants per room.
+4. PlainCall stores no room database or room registry.
+5. Alpha 2 targets 2–8 participants per room.
 6. PlainCall configures LiveKit; it does not reimplement WebRTC or an SFU.
 7. Operational simplicity beats premature scaling.
 
-## v0.1 capabilities
+## Alpha 2 capabilities
 
 ```text
-create room link
-join by link and display name
-pre-call device selection
-microphone meter
+create short reusable room code
+join by fragment link or typed code
+join by display name
+pre-call device selection and meter
 optional camera preview
-voice call
-video call
-screen sharing
-mute
-camera toggle
+front/rear mobile camera flip
+local front-camera mirror only
+responsive participant geometry
+stable keyed tile reconciliation
+voice-first / balanced / sharp / smooth / audio-only modes
+text-or-motion screen-sharing intent
+mute and camera toggle
 device switching
-participant grid
 active-speaker highlight
 connection-quality label
 reconnect state
 copy invite link
-mobile layout
+optional TURN overlay
 ```
 
 ## Explicit non-goals
 
 ```text
 accounts
-persistent rooms
-database
+room database
+persistent room metadata
 chat
 files
 recording
 transcription
 AI summaries
 calendar integration
-OnlyTwo integration
-Nestora integration
 custom encryption protocol
 custom WebRTC implementation
 SIP
 native apps
 Redis
 multi-node LiveKit
-TURN in v0.1
 ```
 
 ## Component boundary
@@ -77,7 +75,9 @@ TURN in v0.1
 plaincall-web
   custom Go application
   - embedded static frontend
-  - signed room-link generation
+  - short-code generation
+  - opaque internal room-ID derivation
+  - Alpha 1 signed-link migration support
   - LiveKit join-token issuance
   - health endpoint
 
@@ -89,59 +89,38 @@ plaincall-livekit
   - video tracks
   - screen-sharing tracks
   - reconnect support
+  - optional embedded TURN
 ```
 
 The Go application never handles media packets.
 
-## Why room links are signed
+## Stateless short-code decision
 
-PlainCall does not maintain a room database. A room link contains:
-
-```text
-version.random-id.expiry.hmac-signature
-```
-
-The backend verifies the signature and expiry before issuing a LiveKit participant token. This preserves a stateless architecture while preventing arbitrary room-token minting.
-
-Anyone with a valid room link may join. The room link is the invitation.
-
-## Network topology
+New rooms use a short code:
 
 ```text
-call.example.com
-  ArvanCloud enabled
-  -> Traefik HTTPS
-  -> web:8080
-
-rtc.example.com
-  ArvanCloud DNS-only
-  -> Traefik HTTPS / WebSocket
-  -> livekit:7880
-
-server public IP
-  -> 7882/udp primary media
-  -> 7881/tcp fallback media
+abc-defg-hjk
 ```
 
-## Deployment boundary
+The browser shares:
 
 ```text
-one repository
-one Compose project
-two services
-two public subdomains
-one existing HTTPS port
-one direct UDP media port
-one direct TCP fallback port
-no Redis
-no TURN initially
+https://call.example.com/join#abc-defg-hjk
 ```
+
+PlainCall stores no lookup table. The backend accepts a syntactically valid code and derives an opaque LiveKit room identifier with HMAC:
+
+```text
+pc_<opaque-derived-id>
+```
+
+This preserves the no-database architecture and keeps user-facing codes out of LiveKit room names. The deliberate trade-off is that short codes are reusable and manually guessable. They are convenience invitations, not high-security bearer capabilities.
+
+Alpha 1 signed links remain accepted until their embedded expiry for migration. Their JWT expiry is capped by the signed-link expiry.
 
 ## API contract
 
 ### `GET /health`
-
-Returns:
 
 ```text
 200 OK
@@ -160,9 +139,9 @@ Response:
 
 ```json
 {
-  "room": "r.<random>.<expiry>.<signature>",
-  "url": "https://call.example.com/r/<room>",
-  "expires_at": "2026-06-13T12:00:00Z"
+  "room": "abc-defg-hjk",
+  "code": "abc-defg-hjk",
+  "url": "https://call.example.com/join#abc-defg-hjk"
 }
 ```
 
@@ -172,7 +151,7 @@ Request:
 
 ```json
 {
-  "room_name": "r.<random>.<expiry>.<signature>",
+  "room_code": "abc-defg-hjk",
   "participant_name": "Alice"
 }
 ```
@@ -186,47 +165,89 @@ Response:
 }
 ```
 
-The LiveKit JWT allows publishing only:
+The JWT grants access to the opaque internal room ID, never the visible code. Alpha 1 clients may continue sending `room_name` during migration.
 
-```text
-camera
-microphone
-screen_share
-screen_share_audio
-```
+## Media policy
 
-Data publishing is disabled because PlainCall does not provide chat or arbitrary realtime messages.
-
-## Efficiency defaults
-
-Frontend LiveKit options:
+LiveKit room defaults:
 
 ```ts
 new Room({
   adaptiveStream: true,
   dynacast: true,
-  videoCaptureDefaults: {
-    resolution: VideoPresets.h720.resolution,
-    frameRate: 24,
-  },
 });
 ```
 
-Capture policy:
+Speech audio:
 
 ```text
-microphone enabled on join
-camera disabled on join unless enabled during preview
-voice-oriented mono audio
-camera maximum 720p / 24 fps
-screen sharing maximum 1080p / 15 fps
+mono capture
+echo cancellation
+noise suppression
+automatic gain control
+RED enabled
+DTX enabled
+```
+
+Voice profiles:
+
+| Mode | Publish ceiling | Use case |
+|---|---:|---|
+| Maximum stability | 12kbps | weak or unstable links |
+| Balanced speech | 24kbps | normal calls |
+| Clear speech | 48kbps | stronger links where voice detail matters |
+
+Video profiles:
+
+| Mode | Capture | Ceiling | Congestion preference |
+|---|---:|---:|---|
+| Voice first | 360p / 15fps | 350kbps | balanced |
+| Balanced | 720p / 24fps | 1.2Mbps | balanced |
+| Sharp video | 1080p / 20fps | 2.5Mbps | maintain resolution |
+| Smooth motion | 720p / 30fps | 1.8Mbps | maintain frame rate |
+| Audio only | disabled | 0 | remote video unsubscribed |
+
+Screen sharing:
+
+| Mode | Capture | Intent |
+|---|---:|---|
+| Text and slides | 1080p / 15fps | detail and readability |
+| Smooth motion | 720p / 30fps | movement |
+
+Layout policy:
+
+```text
+camera video uses contain rather than crop-heavy cover
+desktop mixed calls use a screen-share stage plus camera side rail
+narrow and portrait mixed calls use a screen-share stage plus horizontally scrollable camera strip
+multiple simultaneous screen shares render as a stage gallery
+```
+
+## Network topology
+
+```text
+call.example.com
+  ArvanCloud enabled
+  -> Traefik HTTPS
+  -> web:8080
+
+rtc.example.com
+  ArvanCloud DNS-only
+  -> Traefik HTTPS / WebSocket
+  -> livekit:7880
+
+server public IP
+  -> 7882/udp primary media
+  -> 7881/tcp fallback media
+  -> optional 443/udp TURN/UDP
+  -> optional 5349/tcp TURN/TLS
 ```
 
 ## Deferred decisions
 
-### TURN
+### Host moderation
 
-Add TURN only if real tests show failed joins from restrictive networks where direct UDP and ICE/TCP both fail.
+Add host and guest capabilities only when real usage proves room locking, participant removal, or call termination are needed. Those controls add mutable room state.
 
 ### Redis
 
@@ -235,19 +256,3 @@ Add Redis only when moving to multiple LiveKit nodes.
 ### Dedicated media host
 
 Move LiveKit to a dedicated host only when media CPU or bandwidth affects other workloads.
-
-## v0.1 definition of done
-
-PlainCall v0.1 is ready when:
-
-```text
-eight participants can join the same link
-voice works reliably
-video works
-screen sharing works
-device switching works
-a temporary network interruption is visible and recovers cleanly
-clients can use UDP media
-clients can fall back to ICE/TCP when UDP is blocked
-no database, Redis, TURN, or external SaaS dependency is required
-```
