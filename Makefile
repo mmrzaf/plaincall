@@ -1,18 +1,18 @@
-.PHONY: dev run smoke test vet web-install web-check web-build build check clean secrets
+.PHONY: dev run smoke test vet web-install web-check web-build build check release-check clean secrets
 
-dev:
+dev: web-build
 	./scripts/dev.sh
 
-run:
+run: web-build
 	PLAINCALL_DEV=true go run ./cmd/plaincall
 
 smoke:
 	./scripts/smoke.sh
 
-test:
+test: web-build
 	go test ./...
 
-vet:
+vet: web-build
 	go vet ./...
 
 web-install:
@@ -31,8 +31,11 @@ build: web-build
 check:
 	./scripts/check.sh
 
+release-check:
+	./scripts/release-check.sh
+
 secrets:
 	./scripts/generate-secrets.sh
 
 clean:
-	rm -rf bin web/node_modules
+	rm -rf bin web/node_modules internal/webui/dist

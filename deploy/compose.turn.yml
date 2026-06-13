@@ -1,0 +1,9 @@
+# Optional overlay for embedded LiveKit TURN. Use with compose.yml only after
+# placing a trusted certificate and key in deploy/turn-certs/.
+services:
+  livekit:
+    ports:
+      - "${LIVEKIT_TURN_UDP_PORT:-443}:${LIVEKIT_TURN_UDP_PORT:-443}/udp"
+      - "${LIVEKIT_TURN_TLS_PORT:-5349}:${LIVEKIT_TURN_TLS_PORT:-5349}/tcp"
+    volumes:
+      - ./turn-certs:/turn-certs:ro

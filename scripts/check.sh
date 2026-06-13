@@ -11,17 +11,17 @@ if [ -n "$UNFORMATTED" ]; then
   exit 1
 fi
 
-echo '==> Go tests'
-go test ./...
-
-echo '==> Go vet'
-go vet ./...
-
 echo '==> Frontend dependencies'
 (cd web && npm ci)
 
 echo '==> Frontend type-check and production build'
 (cd web && npm run build)
+
+echo '==> Go tests'
+go test ./...
+
+echo '==> Go vet'
+go vet ./...
 
 echo '==> Go production build'
 mkdir -p bin

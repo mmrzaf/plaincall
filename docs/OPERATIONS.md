@@ -12,6 +12,10 @@ Internet
   +-- server-ip:7882/udp ------------------------------- livekit:7882
   |
   +-- server-ip:7881/tcp ------------------------------- livekit:7881
+  |
+  +-- optional server-ip:443/udp ----------------------- embedded TURN/UDP
+  |
+  +-- optional server-ip:5349/tcp ---------------------- embedded TURN/TLS
 ```
 
 ## Before deployment
@@ -45,7 +49,7 @@ Internet
    ../scripts/generate-secrets.sh
    ```
 
-5. Paste the generated secrets into `.env` and set both domains.
+5. Paste generated secrets into `.env` and set both domains.
 
 ## Deploy
 
@@ -55,6 +59,10 @@ docker compose --env-file .env -f compose.yml pull
 docker compose --env-file .env -f compose.yml up -d
 docker compose --env-file .env -f compose.yml ps
 ```
+
+## Traefik middleware policy
+
+The Compose template intentionally does not reference file-provider middleware names. The Go application already emits security headers and applies API rate limits. Add infrastructure-specific Traefik middleware locally only when those middleware definitions already exist in your Traefik installation. For example, a CDN source-IP allowlist is deployment-specific and must not be assumed by the generic template.
 
 ## Verify
 
@@ -76,6 +84,8 @@ PLAINCALL_ORIGIN=https://call.example.com \
 ../scripts/smoke.sh
 ```
 
+The smoke test creates a short room code, requests a participant token, and confirms that the LiveKit JWT carries only an opaque `pc_...` room ID.
+
 Then run a browser call test from at least two separate devices and networks.
 
 ## Logs
@@ -91,18 +101,62 @@ PlainCall intentionally does not log:
 ```text
 LiveKit API secrets
 participant JWTs
-full room links
+short room codes
+full invite links
 microphone data
 video data
 screen-share data
 ```
+
+New invite URLs use `/join#code`, so the code is not part of the HTTP page request. Alpha 1 `/r/<signed-link>` paths remain accepted during migration; the Go application redacts those paths in its own logs. Configure equivalent redaction at Traefik, CDN, and any external access-log layer until legacy links have aged out.
+
+## Optional embedded TURN
+
+Enable TURN only after reproducing failed joins from restrictive office Wi-Fi, VPNs, or mobile networks.
+
+1. Add a TURN DNS record:
+
+   ```text
+   turn.example.com -> server public IP -> DNS-only
+   ```
+
+2. Put a trusted certificate and key in:
+
+   ```text
+   deploy/turn-certs/tls.crt
+   deploy/turn-certs/tls.key
+   ```
+
+3. Set:
+
+   ```dotenv
+   LIVEKIT_TURN_ENABLED=true
+   PLAINCALL_TURN_DOMAIN=turn.example.com
+   LIVEKIT_TURN_UDP_PORT=443
+   LIVEKIT_TURN_TLS_PORT=5349
+   ```
+
+4. Open:
+
+   ```text
+   443/udp
+   5349/tcp
+   ```
+
+5. Start with the optional overlay:
+
+   ```sh
+   docker compose --env-file .env -f compose.yml -f compose.turn.yml up -d
+   ```
+
+The default optional overlay deliberately keeps TURN/TLS on `5349/tcp`, because Traefik already occupies `443/tcp` on a single-IP deployment. For the broadest restrictive-firewall coverage, place TURN/TLS on a separate public IP or behind an L4 load balancer and advertise `443/tcp`.
 
 ## Upgrade
 
 Pin versions in `.env`:
 
 ```dotenv
-PLAINCALL_VERSION=0.1.0
+PLAINCALL_VERSION=0.2.0-alpha.2
 LIVEKIT_VERSION=v1.13.1
 ```
 
@@ -141,19 +195,39 @@ docker compose --env-file .env -f compose.yml logs --tail=200 livekit
 
 ### Calls work on home networks but fail in strict offices
 
-This is the signal to add TURN. Keep TURN out of v0.1 until this failure is reproduced.
+Enable and test the optional TURN overlay. Do not assume TURN is working merely because the container starts; validate from an actually restrictive network.
 
 ### Calls connect but quality is poor
 
-Check host CPU and network capacity. Media bandwidth is not carried by ArvanCloud or Traefik. It reaches LiveKit directly through `7882/udp` or `7881/tcp`.
+First choose the appropriate in-call mode:
 
-Check whether clients are using TCP fallback excessively. UDP should be the normal path.
+```text
+Voice first    weak Wi-Fi, mobile data, stable speech
+Balanced       normal calls
+Sharp video    readable detail and visual inspection
+Smooth motion  movement and demonstrations
+Audio only     maximum stability and minimum bandwidth
+```
 
-### HTTP API returns `room link is invalid or expired`
+For weak or unstable speech, also lower the independent voice mode:
 
-The room link either expired, was modified, or was not created by the currently deployed `PLAINCALL_SECRET_KEY`.
+```text
+Maximum stability  12kbps mono speech for weak or unstable links
+Balanced speech    24kbps mono speech for normal calls
+Clear speech       48kbps mono voice when the network has room
+```
 
-Changing `PLAINCALL_SECRET_KEY` invalidates existing room links. This is expected.
+Then check host CPU and outbound network capacity. Media traffic reaches LiveKit directly through `7882/udp`, `7881/tcp`, or the optional TURN ports.
+
+### HTTP API returns `room code is invalid or expired`
+
+For a new short code, check formatting. The code must contain ten supported characters, conventionally grouped as:
+
+```text
+abc-defg-hjk
+```
+
+For an Alpha 1 signed link, the embedded expiry may have elapsed or the signing secret may have changed.
 
 ### Container starts but health check fails
 
