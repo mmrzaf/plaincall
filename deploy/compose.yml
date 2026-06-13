@@ -36,7 +36,6 @@ services:
       - "traefik.http.routers.plaincall.entrypoints=websecure"
       - "traefik.http.routers.plaincall.tls=true"
       - "traefik.http.services.plaincall.loadbalancer.server.port=8080"
-      - "traefik.http.routers.plaincall.middlewares=security-headers@file,rate-limit@file,arvancloud-only@file"
 
   livekit:
     image: livekit/livekit-server:${LIVEKIT_VERSION:-v1.13.1}
@@ -60,6 +59,13 @@ services:
         logging:
           level: info
           json: true
+        turn:
+          enabled: ${LIVEKIT_TURN_ENABLED:-false}
+          udp_port: ${LIVEKIT_TURN_UDP_PORT:-443}
+          tls_port: ${LIVEKIT_TURN_TLS_PORT:-5349}
+          domain: ${PLAINCALL_TURN_DOMAIN:-turn.example.com}
+          cert_file: /turn-certs/tls.crt
+          key_file: /turn-certs/tls.key
         keys:
           ${LIVEKIT_API_KEY:?LIVEKIT_API_KEY missing}: ${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET missing}
     networks:
