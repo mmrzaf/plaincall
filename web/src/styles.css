@@ -239,6 +239,7 @@ video {
 }
 
 .check input {
+  flex: none;
   width: 18px;
   height: 18px;
   margin: 2px 0 0;
@@ -331,6 +332,11 @@ video {
   margin: 0;
 }
 
+.landing .notice:empty {
+  min-height: 0;
+  padding: 0;
+}
+
 .or {
   display: flex;
   align-items: center;
@@ -387,11 +393,12 @@ video {
 .lobby-body {
   display: grid;
   flex: 1;
-  grid-template-columns: minmax(0, 1.4fr) minmax(320px, 420px);
-  gap: 28px;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  gap: 32px;
   align-items: center;
+  align-content: center;
   width: 100%;
-  max-width: 1120px;
+  max-width: 1040px;
   margin: 0 auto;
   padding: 16px 24px 32px;
 }
@@ -447,7 +454,35 @@ video {
 }
 
 .form h1 {
-  margin-bottom: 18px;
+  margin-bottom: 16px;
+}
+
+.form .field {
+  margin-bottom: 12px;
+}
+
+.field-hint {
+  margin: -6px 0 12px;
+}
+
+/* Device pickers stay out of the way until someone wants them. */
+.devices {
+  margin-bottom: 16px;
+}
+
+.devices summary,
+.key-details summary {
+  color: var(--muted);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.devices summary {
+  margin-bottom: 10px;
+}
+
+.devices[open] summary {
+  margin-bottom: 12px;
 }
 
 .room-name {
@@ -457,9 +492,6 @@ video {
 
 .key-details summary {
   margin-bottom: 10px;
-  color: var(--muted);
-  font-size: 0.9rem;
-  cursor: pointer;
 }
 
 .key-details[open] summary {
@@ -850,8 +882,8 @@ video {
   right: 8px;
   display: grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   border: 0;
   border-radius: 8px;
   background: rgba(0, 0, 0, 0.55);
@@ -869,7 +901,7 @@ video {
 
 @media (hover: none) {
   .tile-pin {
-    opacity: 1;
+    opacity: 0.7;
   }
 }
 

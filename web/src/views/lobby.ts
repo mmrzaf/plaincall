@@ -73,15 +73,15 @@ export function showLobby(root: HTMLElement, room: string, onJoined: (init: Call
   const qualitySelect = h(
     'select',
     { class: 'input', 'aria-label': 'Room style' },
-    ...QUALITIES.map((q) => h('option', { value: q.id }, `${q.label} · ${q.hint}`)),
+    ...QUALITIES.map((q) => h('option', { value: q.id }, q.label)),
   );
   qualitySelect.value = storage.getQuality();
-  const qualityRow = h(
-    'div',
-    { class: 'quality-row' },
-    field('Room style', qualitySelect),
-    h('p', { class: 'muted small' }, 'Used only when you start the room. A room already running keeps its own style.'),
-  );
+  const qualityHint = h('p', { class: 'muted small field-hint' });
+  const showQualityHint = (): void =>
+    setText(qualityHint, `${QUALITIES.find((q) => q.id === qualitySelect.value)?.hint ?? ''}. Applies only if you start the room.`);
+  qualitySelect.addEventListener('change', showQualityHint);
+  showQualityHint();
+  const qualityRow = h('div', { class: 'quality-row' }, field('Room style', qualitySelect), qualityHint);
 
   const micSelect = h('select', { class: 'input', 'aria-label': 'Microphone' });
   const cameraSelect = h('select', { class: 'input', 'aria-label': 'Camera' });
@@ -98,7 +98,14 @@ export function showLobby(root: HTMLElement, room: string, onJoined: (init: Call
     h('h1', null, 'Join ', h('span', { class: 'room-name' }, room)),
     field('Your name', nameInput),
     keyArea,
-    h('div', { class: 'devices' }, field('Microphone', micSelect), field('Camera', cameraSelect), speakerRow),
+    h(
+      'details',
+      { class: 'devices' },
+      h('summary', null, 'Camera and microphone'),
+      field('Microphone', micSelect),
+      field('Camera', cameraSelect),
+      speakerRow,
+    ),
     notice,
     joinButton,
     waiting,

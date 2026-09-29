@@ -163,8 +163,8 @@ export class SettingsPanel {
 
     append(this.panel.body, [
       field('Microphone', this.selectors.audioinput),
-      supportsAudioOutputSelection() ? field('Speaker', this.selectors.audiooutput) : null,
       field('Camera', this.selectors.videoinput),
+      supportsAudioOutputSelection() ? field('Speaker', this.selectors.audiooutput) : null,
       check(this.mirror, 'Mirror my camera', 'Only changes how you see yourself.'),
       check(this.audioOnly, 'Audio only', 'Turns off your camera and stops receiving video, to save data.'),
     ]);
