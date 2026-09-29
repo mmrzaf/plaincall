@@ -1,3 +1,5 @@
+import { DEFAULT_QUALITY, isQuality, type Quality } from './quality';
+
 export type Role = 'member' | 'guest';
 
 export interface JoinGrant {
@@ -5,6 +7,8 @@ export interface JoinGrant {
   url: string;
   token: string;
   role: Role;
+  /** The room's preset, which every browser applies to its video. */
+  quality: Quality;
 }
 
 /** An error reported by the server, or a failure to reach it. */
@@ -48,9 +52,18 @@ async function request<T>(path: string, body: unknown, key?: string): Promise<T>
   return payload as T;
 }
 
-/** Asks to join a room. Include `key` to join as a member. */
-export function join(room: string, name: string, key?: string): Promise<JoinGrant> {
-  return request<JoinGrant>('/api/join', { room, name, key: key || undefined });
+/**
+ * Asks to join a room. Include `key` to join as a member. A member starting a
+ * new room chooses its preset with `quality`. An existing room keeps its own.
+ */
+export async function join(room: string, name: string, key?: string, quality?: Quality): Promise<JoinGrant> {
+  const grant = await request<JoinGrant>('/api/join', {
+    room,
+    name,
+    key: key || undefined,
+    quality: key ? quality : undefined,
+  });
+  return { ...grant, quality: isQuality(grant.quality) ? grant.quality : DEFAULT_QUALITY };
 }
 
 export function removeParticipant(room: string, identity: string, key: string): Promise<void> {

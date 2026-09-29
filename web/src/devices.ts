@@ -2,11 +2,11 @@ import {
   LocalAudioTrack,
   LocalVideoTrack,
   Room,
-  VideoPresets,
   createLocalAudioTrack,
   createLocalVideoTrack,
   supportsAudioOutputSelection,
 } from 'livekit-client';
+import { DEFAULT_QUALITY, cameraCapture, type Quality } from './quality';
 import type { DeviceKind } from './storage';
 
 export { supportsAudioOutputSelection };
@@ -32,10 +32,10 @@ export function microphoneOptions(deviceId?: string) {
 }
 
 /** Camera capture settings shared by the preview and the call. */
-export function cameraOptions(deviceId?: string) {
+export function cameraOptions(deviceId?: string, quality: Quality = DEFAULT_QUALITY) {
   return {
     deviceId: deviceId ? { ideal: deviceId } : undefined,
-    resolution: VideoPresets.h720.resolution,
+    ...cameraCapture(quality),
   };
 }
 

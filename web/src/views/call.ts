@@ -22,6 +22,7 @@ import {
 } from '../devices';
 import { confirmDialog, h, setText } from '../dom';
 import { icon, type IconName } from '../icons';
+import { QUALITIES, cameraPublish, screenShareSettings } from '../quality';
 import { roomUrl } from '../rooms';
 import { storage, type DeviceChoices, type DeviceKind } from '../storage';
 import { PeoplePanel, SettingsPanel, type Panel } from './panels';
@@ -54,6 +55,7 @@ setLogLevel(LogLevel.error);
 export async function startCall(root: HTMLElement, init: CallInit): Promise<void> {
   const { grant } = init;
   const isMember = grant.role === 'member';
+  const quality = grant.quality;
   const choices = init.choices;
   let mirror = storage.getPreferences().mirror;
   let audioOnly = false;
@@ -65,12 +67,13 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
   let wakeLock: WakeLockSentinel | undefined;
 
   const room = new Room({
-    adaptiveStream: true,
+    // Ask for the layer that matches the viewer's real screen, so text stays sharp.
+    adaptiveStream: { pixelDensity: 'screen' },
     dynacast: true,
     stopLocalTrackOnUnpublish: true,
     publishDefaults: { audioPreset: AudioPresets.speech, dtx: true, red: true, simulcast: true },
     audioCaptureDefaults: microphoneOptions(choices.audioinput),
-    videoCaptureDefaults: cameraOptions(choices.videoinput),
+    videoCaptureDefaults: cameraOptions(choices.videoinput, quality),
   });
   const local = room.localParticipant;
 
@@ -88,6 +91,8 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
 
   const lockBadge = h('span', { class: 'chip warn', hidden: true }, icon('lock', 13), 'Locked');
   const audioOnlyBadge = h('span', { class: 'chip', hidden: true }, 'Audio only');
+  const qualityLabel = QUALITIES.find((q) => q.id === quality)?.label ?? '';
+  const qualityBadge = h('span', { class: 'chip', title: 'Room style' }, qualityLabel);
   const copyButton = h('button', { class: 'btn compact', type: 'button', onclick: () => void copyLink() }, icon('copy', 16), 'Copy link');
 
   const micButton = control();
@@ -132,6 +137,7 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
         'header',
         { class: 'topbar' },
         h('span', { class: 'room-title' }, init.room),
+        qualityBadge,
         lockBadge,
         audioOnlyBadge,
         h('span', { class: 'spacer' }),
@@ -237,21 +243,32 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
         // Unpublishing stops the camera, so its light goes off.
         await local.unpublishTrack(current, true);
       } else {
-        await local.setCameraEnabled(true, cameraOptions(room.getActiveDevice('videoinput') ?? choices.videoinput));
+        await local.setCameraEnabled(
+          true,
+          cameraOptions(room.getActiveDevice('videoinput') ?? choices.videoinput, quality),
+          cameraPublish(quality),
+        );
       }
     }, (error) => deviceErrorMessage(error, 'camera'));
 
-  const toggleShare = (): Promise<void> =>
-    attempt(
+  const toggleShare = (): Promise<void> => {
+    const { capture, publish } = screenShareSettings(quality);
+    return attempt(
       () =>
-        local.setScreenShareEnabled(!local.isScreenShareEnabled, {
-          audio: true,
-          systemAudio: 'include',
-          selfBrowserSurface: 'exclude',
-          surfaceSwitching: 'include',
-        }),
+        local.setScreenShareEnabled(
+          !local.isScreenShareEnabled,
+          {
+            audio: true,
+            systemAudio: 'include',
+            selfBrowserSurface: 'exclude',
+            surfaceSwitching: 'include',
+            ...capture,
+          },
+          publish,
+        ),
       (error) => (isScreenShareCancelled(error) ? '' : deviceErrorMessage(error, 'screen')),
     );
+  };
 
   async function switchDevice(kind: DeviceKind, deviceId: string): Promise<void> {
     choices[kind] = deviceId;
@@ -448,8 +465,15 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
         .catch((error) => toast(deviceErrorMessage(error, 'microphone'), 'error'));
     }
     if (init.video) {
+      // The preview was opened before the room's style was known. Reopen the
+      // camera when the style asks for a different picture size.
+      const wanted = cameraOptions(undefined, quality).resolution?.height;
+      const settings = init.video.mediaStreamTrack.getSettings();
+      if (wanted && settings.height && settings.height !== wanted) {
+        await init.video.restartTrack(cameraOptions(settings.deviceId, quality)).catch(() => undefined);
+      }
       await local
-        .publishTrack(init.video, { source: Track.Source.Camera })
+        .publishTrack(init.video, { source: Track.Source.Camera, ...cameraPublish(quality) })
         .catch((error) => toast(deviceErrorMessage(error, 'camera'), 'error'));
     }
   }

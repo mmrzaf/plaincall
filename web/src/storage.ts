@@ -1,6 +1,8 @@
 // Settings kept in this browser. Storage can be unavailable (private modes,
 // blocked cookies), so every access tolerates failure.
 
+import { DEFAULT_QUALITY, isQuality, type Quality } from './quality';
+
 const PREFIX = 'plaincall.';
 
 function read(name: string): string | null {
@@ -34,6 +36,12 @@ const DEFAULT_PREFERENCES: Preferences = { micOn: true, cameraOn: true, mirror: 
 export const storage = {
   getName: (): string => read('name') ?? '',
   setName: (name: string): void => write('name', name),
+
+  getQuality: (): Quality => {
+    const stored = read('quality');
+    return isQuality(stored) ? stored : DEFAULT_QUALITY;
+  },
+  setQuality: (quality: Quality): void => write('quality', quality),
 
   getKey: (): string => read('key') ?? '',
   setKey: (key: string): void => write('key', key),
