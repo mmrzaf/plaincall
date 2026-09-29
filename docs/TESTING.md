@@ -10,7 +10,7 @@
 
 `LIVEKIT_TEST_KEY` and `LIVEKIT_TEST_SECRET` default to LiveKit's `--dev` credentials. CI runs all of this on every push to `develop` and `main`, and again on a release tag before anything is published.
 
-The browser tests cover joining, waiting and admission, moderation, locking, screen sharing, audio-only mode, reconnecting, a six-person layout, the phone layout, host key handling and the failure messages. They use fake cameras and microphones, so they check that media flows, not how it looks or sounds.
+The browser tests cover joining, waiting and admission, moderation (removing, muting, locking, a full room), screen sharing, the three room presets (they read the real encoder settings from the browser), chat, pinning, audio-only mode, reconnecting, a six-person layout, the phone layout, host key handling and the failure messages. They use fake cameras and microphones, so they check that media flows, not how it looks or sounds.
 
 ## Manual checks before a release
 
@@ -34,6 +34,12 @@ Try these on the deployed site. The first two sections are the ones automation c
 - Start a screen share while people join. Cameras move to the side rail, or to a strip below the share on a phone.
 - Two people sharing at once: both shares stay reachable.
 - Your own camera is mirrored only if "Mirror my camera" is on, and other people never see it mirrored.
+
+**Room presets**
+- Start a Presentation room, share slides and read them from another device on a normal connection. Text is sharp.
+- Start a Meeting room and share a video. Motion is smooth.
+- Start a Low bandwidth room on a weak connection. Video is small but steady.
+- In `chrome://webrtc-internals` on a viewer, the shared screen's incoming stream shows the size and frame rate you expect.
 
 **Screen share audio**
 - Share a browser tab with "share tab audio" on. The other person hears it.
