@@ -80,7 +80,11 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
 
   // ---- Elements -----------------------------------------------------------
 
-  const stage = new Stage();
+  let pinned: string | undefined;
+  const stage = new Stage((identity) => {
+    pinned = pinned === identity ? undefined : identity;
+    schedule();
+  });
   const audioSink = h('div', { hidden: true });
   const connectionBanner = h('div', { class: 'banner', role: 'status' }, 'Connecting…');
   const audioBanner = h(
@@ -182,7 +186,8 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
   }
 
   function render(): void {
-    stage.update(room, { mirrorSelf: mirror });
+    if (pinned && pinned !== local.identity && !room.remoteParticipants.has(pinned)) pinned = undefined; // they left
+    stage.update(room, { mirrorSelf: mirror, pinned });
     const locked = isLocked();
     lockBadge.hidden = !locked;
     audioOnlyBadge.hidden = !audioOnly;

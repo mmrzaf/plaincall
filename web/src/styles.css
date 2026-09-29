@@ -843,6 +843,36 @@ video {
   overflow-wrap: anywhere;
 }
 
+/* Pin button on a tile: shown on hover or focus, and always on touch screens. */
+.tile-pin {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.participant-tile:hover .tile-pin,
+.screen-tile:hover .tile-pin,
+.tile-pin:focus-visible,
+.participant-tile.pinned .tile-pin {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .tile-pin {
+    opacity: 1;
+  }
+}
+
 /* Chat: a scrolling list above a small message form. */
 .panel-body.chat {
   display: flex;
