@@ -25,6 +25,7 @@ Media never passes through Traefik. It goes straight to the server's own ports.
 - A Linux server with Docker and the Compose plugin.
 - Traefik already running, with a `websecure` entry point, working certificates, and an external Docker network named `proxy`.
 - Two DNS names pointing at the server, for example `call.example.com` and `rtc.example.com`.
+- The server's public IP address, set as `PLAINCALL_SERVER_PUBLIC_IP`. LiveKit advertises it to browsers, and PlainCall never asks an outside service for it.
 - These ports open in the server's firewall:
   - `443/tcp` for Traefik, if not already open.
   - `7881/tcp` and `7882/udp` for LiveKit media.
