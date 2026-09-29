@@ -62,6 +62,7 @@ PlainCall reads environment variables.
 | `LIVEKIT_API_SECRET` | yes | LiveKit API secret. |
 | `LIVEKIT_API_URL` | no | Address this server uses to call LiveKit. Defaults to `LIVEKIT_URL` with `http(s)`. Set it to the internal address, such as `http://livekit:7880`, when both run in one Compose stack. |
 | `PLAINCALL_ADDR` | no | Listen address. Default `:8080`. |
+| `PLAINCALL_MAX_PARTICIPANTS` | no | People per room, 2 to 500. Default `20`. A full room tells the next person it is full. |
 | `PLAINCALL_TRUST_PROXY_HEADERS` | no | `true` when behind a reverse proxy, so rate limits use the client address from `X-Forwarded-For`. Default `false`. |
 
 ## HTTP API

@@ -81,7 +81,17 @@ PlainCall writes one JSON line per request and per moderation action. They conta
 
 Capacity is set by the server's network bandwidth and CPU, not by PlainCall. Each participant sends one video stream and receives everyone else's, so traffic grows quickly with room size. LiveKit lowers quality automatically when links are constrained.
 
-`max_participants` in `livekit.yaml` caps a room (20 by default). Raise it only if the server has the bandwidth for it.
+`PLAINCALL_MAX_PARTICIPANTS` in `.env` caps a room (20 by default). PlainCall gives every room this limit when a host starts it, and tells the next person that the room is full. Change it and run `docker compose up -d` to apply it to rooms started afterwards.
+
+Each person receives a stream from everyone else, so the server's outbound traffic grows roughly with the square of the room size. As a rough guide with everyone's camera on in a gallery, and no screen share:
+
+| People | Server outbound |
+| --- | --- |
+| 8 | about 20 Mbps |
+| 12 | about 50 Mbps |
+| 20 | about 150 Mbps |
+
+A screen share adds about 3 Mbps for every viewer at the moment the slide changes. If the server's uplink is smaller than these numbers, lower the limit, or ask people to start with cameras off. Measure your own uplink before raising the limit.
 
 ## Optional: TURN for restrictive networks
 

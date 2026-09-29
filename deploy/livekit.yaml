@@ -11,9 +11,7 @@ rtc:
   use_external_ip: false
 
 room:
-  # People per room. Raise it if you host larger meetups; bandwidth grows
-  # with every extra participant.
-  max_participants: 20
+  # The number of people per room is PLAINCALL_MAX_PARTICIPANTS in .env.
   # Seconds an empty room lingers. A room's lock is forgotten when it closes.
   empty_timeout: 120
   departure_timeout: 20
