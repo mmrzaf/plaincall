@@ -6,7 +6,11 @@ import { computeGrid } from '../layout';
 const GAP = 10;
 
 interface Tile {
+  /** Who the tile shows. */
+  identity: string;
   el: HTMLElement;
+  /** Pins or unpins the person. Only camera tiles have one. */
+  pin?: HTMLButtonElement;
   media: HTMLElement;
   video: HTMLVideoElement;
   avatar: HTMLElement;
@@ -18,6 +22,8 @@ interface Tile {
 export interface StageState {
   /** Mirror the local camera, like a mirror would. */
   mirrorSelf: boolean;
+  /** The person shown large by this viewer, if any. */
+  pinned?: string;
 }
 
 /**
@@ -30,10 +36,11 @@ export class Stage {
   private readonly screens = h('section', { class: 'screens', 'aria-label': 'Shared screens' });
   private readonly tiles = new Map<string, Tile>();
   private readonly shares = new Map<string, Tile>();
+  private readonly pinnedTiles = new Map<string, Tile>();
   private readonly observer: ResizeObserver;
   private tileCount = 1;
 
-  constructor() {
+  constructor(private readonly onPin: (identity: string) => void = () => {}) {
     this.el = h('main', { class: 'stage' }, this.screens, this.grid);
     this.observer = new ResizeObserver(() => this.fit());
     this.observer.observe(this.grid);
@@ -47,27 +54,44 @@ export class Stage {
     const participants: Participant[] = [room.localParticipant, ...room.remoteParticipants.values()];
 
     // One tile per participant, showing their camera or an avatar.
-    const cameraTiles = this.reconcile(this.tiles, participants, (p) => p.identity, () => createTile('participant-tile'));
+    const cameraTiles = this.reconcile(this.tiles, participants, (p) => p.identity, (id) => createTile(id, 'participant-tile', this.onPin));
     participants.forEach((participant, index) => {
       const tile = cameraTiles[index] as Tile;
       const local = participant === room.localParticipant;
       this.updateCamera(tile, participant, local, local && state.mirrorSelf);
+      const pinned = participant.identity === state.pinned;
+      tile.el.classList.toggle('pinned', pinned);
+      if (tile.pin) {
+        tile.pin.setAttribute('aria-label', `${pinned ? 'Unpin' : 'Pin'} ${displayName(participant)}`);
+        tile.pin.setAttribute('aria-pressed', String(pinned));
+        tile.pin.replaceChildren(icon(pinned ? 'pinOff' : 'pin', 16));
+      }
     });
     placeInOrder(this.grid, cameraTiles.map((tile) => tile.el));
 
-    // One large tile per screen share.
+    // Large tiles: one for a pinned person, and one per screen share.
+    const featured = participants.filter((p) => p.identity === state.pinned);
+    const pinnedTiles = this.reconcile(this.pinnedTiles, featured, (p) => p.identity, (id) => createTile(id, 'screen-tile pinned-tile', this.onPin, true));
+    featured.forEach((participant, index) => {
+      const tile = pinnedTiles[index] as Tile;
+      const local = participant === room.localParticipant;
+      this.updateCamera(tile, participant, local, local && state.mirrorSelf);
+      tile.pin?.setAttribute('aria-label', `Unpin ${displayName(participant)}`);
+    });
+
     const sharing = participants.filter((p) => screenTrack(p) !== undefined);
-    const shareTiles = this.reconcile(this.shares, sharing, (p) => p.identity, () => createTile('screen-tile'));
+    const shareTiles = this.reconcile(this.shares, sharing, (p) => p.identity, (id) => createTile(id, 'screen-tile'));
     sharing.forEach((participant, index) => {
       const tile = shareTiles[index] as Tile;
       const local = participant === room.localParticipant;
       setVideo(tile, screenTrack(participant));
       setText(tile.label, local ? 'Your screen' : `${displayName(participant)}’s screen`);
     });
-    placeInOrder(this.screens, shareTiles.map((tile) => tile.el));
+    const large = [...pinnedTiles, ...shareTiles];
+    placeInOrder(this.screens, large.map((tile) => tile.el));
 
-    this.el.classList.toggle('sharing', sharing.length > 0);
-    this.screens.dataset['count'] = String(sharing.length);
+    this.el.classList.toggle('sharing', large.length > 0);
+    this.screens.dataset['count'] = String(large.length);
     this.tileCount = participants.length;
     this.fit();
   }
@@ -104,7 +128,7 @@ export class Stage {
   }
 
   /** Keeps `tiles` in step with `items`, creating and removing tiles as needed. */
-  private reconcile<T>(tiles: Map<string, Tile>, items: T[], key: (item: T) => string, create: () => Tile): Tile[] {
+  private reconcile<T>(tiles: Map<string, Tile>, items: T[], key: (item: T) => string, create: (id: string) => Tile): Tile[] {
     const wanted = new Set(items.map(key));
     for (const [id, tile] of tiles) {
       if (wanted.has(id)) continue;
@@ -116,7 +140,7 @@ export class Stage {
       const id = key(item);
       let tile = tiles.get(id);
       if (!tile) {
-        tile = create();
+        tile = create(id);
         tiles.set(id, tile);
       }
       return tile;
@@ -124,14 +148,21 @@ export class Stage {
   }
 }
 
-function createTile(className: string): Tile {
+function createTile(identity: string, className: string, onPin?: (identity: string) => void, pinned = false): Tile {
   const video = h('video', { autoplay: true, playsInline: true, muted: true });
   const avatar = h('div', { class: 'avatar', 'aria-hidden': 'true' });
-  const media = h('div', { class: 'tile-media' }, video, avatar);
+  const pin = onPin
+    ? h(
+        'button',
+        { class: 'tile-pin', type: 'button', onclick: () => onPin(identity) },
+        icon(pinned ? 'pinOff' : 'pin', 16),
+      )
+    : undefined;
+  const media = h('div', { class: 'tile-media' }, video, avatar, pin);
   const label = h('span', { class: 'tile-name' });
   const badges = h('span', { class: 'tile-badges' });
   const el = h('article', { class: className }, media, h('div', { class: 'tile-bar' }, label, badges));
-  return { el, media, video, avatar, label, badges };
+  return { identity, el, media, video, avatar, label, badges, pin };
 }
 
 /** Points a tile's video at `track`, releasing the previous one. */

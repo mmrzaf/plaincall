@@ -22,16 +22,31 @@ type joinRequest struct {
 	Room string `json:"room"`
 	Name string `json:"name"`
 	Key  string `json:"key"`
+	// Quality is the preset for a room the member starts. It is ignored when the
+	// room already exists.
+	Quality string `json:"quality"`
 }
 
 type joinResponse struct {
 	URL   string   `json:"url"`
 	Token string   `json:"token"`
 	Role  rtc.Role `json:"role"`
+	// Quality is the room's preset, which the browser applies to its video.
+	Quality rtc.Quality `json:"quality"`
 }
 
 type kickRequest struct {
 	Identity string `json:"identity"`
+}
+
+// muteRequest names one person, or asks to mute every guest.
+type muteRequest struct {
+	Identity string `json:"identity"`
+	All      bool   `json:"all"`
+}
+
+type muteResponse struct {
+	Muted int `json:"muted"`
 }
 
 type lockRequest struct {
@@ -67,7 +82,14 @@ func (s *Server) join(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	quality, ok := rtc.ParseQuality(req.Quality)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid_quality", "Choose presentation, meeting or low.")
+		return
+	}
+
 	role := rtc.RoleGuest
+	var state rtc.Room
 	if req.Key != "" {
 		label, ok := s.authenticate(w, r, req.Key)
 		if !ok {
@@ -75,6 +97,11 @@ func (s *Server) join(w http.ResponseWriter, r *http.Request) {
 		}
 		role = rtc.RoleMember
 		s.log.Info("member joining", "room", room, "key", label)
+		var err error
+		if state, err = s.lk.OpenRoom(r.Context(), room, quality, s.cfg.MaxParticipants); err != nil {
+			s.livekitFailed(w, "open room", err)
+			return
+		}
 	} else {
 		presence, err := s.lk.Presence(r.Context(), room)
 		if err != nil {
@@ -89,6 +116,14 @@ func (s *Server) join(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "waiting_for_host", "The host has not arrived yet.")
 			return
 		}
+		state = presence.Room
+	}
+	if state.Participants >= s.cfg.MaxParticipants {
+		writeError(w, http.StatusConflict, "room_full", "This room is full.")
+		return
+	}
+	if state.Quality != "" {
+		quality = state.Quality
 	}
 
 	token, err := s.lk.JoinToken(room, name, role)
@@ -97,7 +132,7 @@ func (s *Server) join(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "Could not join the room.")
 		return
 	}
-	writeJSON(w, http.StatusOK, joinResponse{URL: s.cfg.LiveKitURL, Token: token, Role: role})
+	writeJSON(w, http.StatusOK, joinResponse{URL: s.cfg.LiveKitURL, Token: token, Role: role, Quality: quality})
 }
 
 func (s *Server) kick(w http.ResponseWriter, r *http.Request) {
@@ -119,6 +154,34 @@ func (s *Server) kick(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("participant removed", "room", room, "key", label)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) mute(w http.ResponseWriter, r *http.Request) {
+	room, label, ok := s.memberRequest(w, r)
+	if !ok {
+		return
+	}
+	var req muteRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.All == (req.Identity != "") || len(req.Identity) > 128 {
+		writeError(w, http.StatusBadRequest, "invalid_target", "Choose one person, or all guests.")
+		return
+	}
+	muted := 1
+	var err error
+	if req.All {
+		muted, err = s.lk.MuteGuests(r.Context(), room)
+	} else {
+		err = s.lk.MuteMicrophone(r.Context(), room, req.Identity)
+	}
+	if err != nil {
+		s.livekitFailed(w, "mute", err)
+		return
+	}
+	s.log.Info("microphones muted", "room", room, "all", req.All, "key", label)
+	writeJSON(w, http.StatusOK, muteResponse{Muted: muted})
 }
 
 func (s *Server) end(w http.ResponseWriter, r *http.Request) {

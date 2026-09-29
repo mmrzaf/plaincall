@@ -3,55 +3,60 @@ import { resolve } from 'node:path';
 import { expect, test } from '@playwright/test';
 import { needKey, noMedia, openLobby, randomRoom, useKey } from './helpers';
 
-const PORT = 18081;
-let dead: ChildProcess | undefined;
+// Two instances of PlainCall, each with part of the call server out of reach.
+const NO_API = 18081; // the room service is down
+const NO_MEDIA = 18083; // the room service works but browsers cannot reach the media address
+const children: ChildProcess[] = [];
 
-test.beforeAll(async () => {
+async function start(port: number, env: Record<string, string>): Promise<void> {
   const bin = process.env['PLAINCALL_BIN'] ?? resolve(import.meta.dirname, '../../bin/plaincall');
-  dead = spawn(bin, [], {
-    env: {
-      ...process.env,
-      PLAINCALL_ADDR: `127.0.0.1:${PORT}`,
-      PLAINCALL_KEYS: `dead:${needKey()}`,
-      // Nothing listens on port 9, so neither the API nor the media server answers.
-      LIVEKIT_URL: 'ws://127.0.0.1:9',
-      LIVEKIT_API_URL: 'http://127.0.0.1:9',
-    },
-    stdio: 'ignore',
-  });
+  children.push(
+    spawn(bin, [], {
+      env: { ...process.env, PLAINCALL_ADDR: `127.0.0.1:${port}`, PLAINCALL_KEYS: `dead:${needKey()}`, ...env },
+      stdio: 'ignore',
+    }),
+  );
   for (let i = 0; i < 50; i++) {
     try {
-      if ((await fetch(`http://127.0.0.1:${PORT}/healthz`)).ok) return;
+      if ((await fetch(`http://127.0.0.1:${port}/healthz`)).ok) return;
     } catch {
       await new Promise((r) => setTimeout(r, 100));
     }
   }
-  throw new Error('The second PlainCall instance did not start.');
+  throw new Error(`PlainCall on port ${port} did not start.`);
+}
+
+test.beforeAll(async () => {
+  // Nothing listens on port 9.
+  await start(NO_API, { LIVEKIT_URL: 'ws://127.0.0.1:9', LIVEKIT_API_URL: 'http://127.0.0.1:9' });
+  await start(NO_MEDIA, { LIVEKIT_URL: 'ws://127.0.0.1:9' });
 });
 
 test.afterAll(() => {
-  dead?.kill();
+  for (const child of children) child.kill();
 });
 
-test('an unreachable call server gives clear messages', async ({ browser }) => {
-  const base = `http://127.0.0.1:${PORT}`;
-  const room = randomRoom();
+async function lobbyOn(browser: import('@playwright/test').Browser, port: number, name: string, key?: string) {
+  const context = await browser.newContext({ baseURL: `http://127.0.0.1:${port}`, permissions: ['camera', 'microphone'] });
+  const page = await context.newPage();
+  await page.addInitScript((p) => localStorage.setItem('plaincall.preferences', JSON.stringify(p)), noMedia);
+  await openLobby(page, randomRoom(), name);
+  if (key) await useKey(page, key);
+  await page.getByRole('button', { name: 'Join call' }).click();
+  return { context, page };
+}
 
-  const guestCtx = await browser.newContext({ baseURL: base, permissions: ['camera', 'microphone'] });
-  const guest = await guestCtx.newPage();
-  await guest.addInitScript((p) => localStorage.setItem('plaincall.preferences', JSON.stringify(p)), noMedia);
-  await openLobby(guest, room, 'Gus');
-  await guest.getByRole('button', { name: 'Join call' }).click();
-  await expect(guest.getByRole('status').first()).toContainText('The call server is not responding');
+test('with the room service down, guests and hosts are told the server is not responding', async ({ browser }) => {
+  const guest = await lobbyOn(browser, NO_API, 'Gus');
+  await expect(guest.page.getByRole('status').first()).toContainText('The call server is not responding');
+  const host = await lobbyOn(browser, NO_API, 'Hal', needKey());
+  await expect(host.page.getByRole('status').first()).toContainText('The call server is not responding');
+  await guest.context.close();
+  await host.context.close();
+});
 
-  const memberCtx = await browser.newContext({ baseURL: base, permissions: ['camera', 'microphone'] });
-  const member = await memberCtx.newPage();
-  await member.addInitScript((p) => localStorage.setItem('plaincall.preferences', JSON.stringify(p)), noMedia);
-  await openLobby(member, room, 'Hal');
-  await useKey(member, needKey());
-  await member.getByRole('button', { name: 'Join call' }).click();
-  await expect(member.getByRole('heading', { name: 'Could not join the call' })).toBeVisible({ timeout: 60_000 });
-
-  await guestCtx.close();
-  await memberCtx.close();
+test('when the media address cannot be reached, a host sees that the call could not be joined', async ({ browser }) => {
+  const host = await lobbyOn(browser, NO_MEDIA, 'Hal', needKey());
+  await expect(host.page.getByRole('heading', { name: 'Could not join the call' })).toBeVisible({ timeout: 60_000 });
+  await host.context.close();
 });

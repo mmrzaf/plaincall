@@ -239,6 +239,7 @@ video {
 }
 
 .check input {
+  flex: none;
   width: 18px;
   height: 18px;
   margin: 2px 0 0;
@@ -331,6 +332,11 @@ video {
   margin: 0;
 }
 
+.landing .notice:empty {
+  min-height: 0;
+  padding: 0;
+}
+
 .or {
   display: flex;
   align-items: center;
@@ -387,11 +393,12 @@ video {
 .lobby-body {
   display: grid;
   flex: 1;
-  grid-template-columns: minmax(0, 1.4fr) minmax(320px, 420px);
-  gap: 28px;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  gap: 32px;
   align-items: center;
+  align-content: center;
   width: 100%;
-  max-width: 1120px;
+  max-width: 1040px;
   margin: 0 auto;
   padding: 16px 24px 32px;
 }
@@ -447,7 +454,35 @@ video {
 }
 
 .form h1 {
-  margin-bottom: 18px;
+  margin-bottom: 16px;
+}
+
+.form .field {
+  margin-bottom: 12px;
+}
+
+.field-hint {
+  margin: -6px 0 12px;
+}
+
+/* Device pickers stay out of the way until someone wants them. */
+.devices {
+  margin-bottom: 16px;
+}
+
+.devices summary,
+.key-details summary {
+  color: var(--muted);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.devices summary {
+  margin-bottom: 10px;
+}
+
+.devices[open] summary {
+  margin-bottom: 12px;
 }
 
 .room-name {
@@ -457,9 +492,6 @@ video {
 
 .key-details summary {
   margin-bottom: 10px;
-  color: var(--muted);
-  font-size: 0.9rem;
-  cursor: pointer;
 }
 
 .key-details[open] summary {
@@ -841,6 +873,105 @@ video {
   gap: 8px;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+/* Pin button on a tile: shown on hover or focus, and always on touch screens. */
+.tile-pin {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.participant-tile:hover .tile-pin,
+.screen-tile:hover .tile-pin,
+.tile-pin:focus-visible,
+.participant-tile.pinned .tile-pin {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .tile-pin {
+    opacity: 0.7;
+  }
+}
+
+/* Chat: a scrolling list above a small message form. */
+.panel-body.chat {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+
+.chat-scroll {
+  flex: 1;
+  min-height: 0;
+  padding: 8px 16px;
+  overflow-y: auto;
+}
+
+.chat-list {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chat-message {
+  padding: 6px 0;
+}
+
+.chat-message.follow {
+  padding-top: 0;
+}
+
+.chat-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.chat-name {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.chat-message.mine .chat-name {
+  color: var(--accent);
+}
+
+.chat-text {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.chat-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 12px 16px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.chat-input {
+  flex: 1;
+  min-height: 44px;
+  max-height: 120px;
+  resize: none;
 }
 
 .muted-mic {

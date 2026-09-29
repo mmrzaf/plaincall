@@ -10,6 +10,13 @@ import (
 	"strings"
 )
 
+// Limits for PLAINCALL_MAX_PARTICIPANTS.
+const (
+	DefaultMaxParticipants = 20
+	MinMaxParticipants     = 2
+	MaxMaxParticipants     = 500
+)
+
 // Config holds every setting the server needs.
 type Config struct {
 	// Addr is the address the HTTP server listens on.
@@ -17,6 +24,8 @@ type Config struct {
 	// TrustProxyHeaders makes the server take the client address from the
 	// last X-Forwarded-For entry. Enable it only behind a reverse proxy.
 	TrustProxyHeaders bool
+	// MaxParticipants is how many people one room holds.
+	MaxParticipants int
 	// Keys are the member keys.
 	Keys Keys
 	// LiveKitURL is the public WebSocket URL browsers connect to.
@@ -44,6 +53,16 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	if cfg.Addr == "" {
 		cfg.Addr = ":8080"
+	}
+
+	cfg.MaxParticipants = DefaultMaxParticipants
+	if raw := get("PLAINCALL_MAX_PARTICIPANTS"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < MinMaxParticipants || n > MaxMaxParticipants {
+			fail("PLAINCALL_MAX_PARTICIPANTS must be a number from %d to %d", MinMaxParticipants, MaxMaxParticipants)
+		} else {
+			cfg.MaxParticipants = n
+		}
 	}
 
 	if raw := get("PLAINCALL_TRUST_PROXY_HEADERS"); raw != "" {

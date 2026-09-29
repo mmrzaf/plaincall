@@ -67,15 +67,20 @@ func TestLiveKitRoomLifecycle(t *testing.T) {
 		t.Errorf("SetLocked on a missing room = %v, want ErrNotFound", err)
 	}
 
-	// Rooms normally appear when the first participant joins. Create one directly.
-	if err := c.call(ctx, "CreateRoom", room, map[string]any{"name": room}, nil); err != nil {
-		t.Fatalf("CreateRoom: %v", err)
+	// The first host to open a room decides its preset, and a second call
+	// returns the room as it is.
+	opened, err := c.OpenRoom(ctx, room, QualityLow, 6)
+	if err != nil || opened.Quality != QualityLow {
+		t.Fatalf("OpenRoom = %+v, %v", opened, err)
+	}
+	if again, err := c.OpenRoom(ctx, room, QualityMeeting, 6); err != nil || again.Quality != QualityLow {
+		t.Errorf("a second OpenRoom = %+v, %v; the first preset should win", again, err)
 	}
 	if err := c.SetLocked(ctx, room, true); err != nil {
 		t.Fatalf("SetLocked: %v", err)
 	}
-	if presence, err = c.Presence(ctx, room); err != nil || !presence.Locked {
-		t.Errorf("Presence after locking = %+v, %v", presence, err)
+	if presence, err = c.Presence(ctx, room); err != nil || !presence.Locked || presence.Quality != QualityLow {
+		t.Errorf("Presence after locking = %+v, %v; the preset must survive locking", presence, err)
 	}
 	if err := c.SetLocked(ctx, room, false); err != nil {
 		t.Fatal(err)

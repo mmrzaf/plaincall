@@ -10,6 +10,7 @@ import {
 } from '../devices';
 import { field, h, setText } from '../dom';
 import { icon, setIcon } from '../icons';
+import { QUALITIES, isQuality, type Quality } from '../quality';
 import { storage, type DeviceChoices } from '../storage';
 import type { CallInit } from './call';
 
@@ -68,6 +69,20 @@ export function showLobby(root: HTMLElement, room: string, onJoined: (init: Call
   });
   const keyArea = h('div', { class: 'key-area' });
 
+  // Hosts choose how a new room handles video. An existing room keeps its own.
+  const qualitySelect = h(
+    'select',
+    { class: 'input', 'aria-label': 'Room style' },
+    ...QUALITIES.map((q) => h('option', { value: q.id }, q.label)),
+  );
+  qualitySelect.value = storage.getQuality();
+  const qualityHint = h('p', { class: 'muted small field-hint' });
+  const showQualityHint = (): void =>
+    setText(qualityHint, `${QUALITIES.find((q) => q.id === qualitySelect.value)?.hint ?? ''}. Applies only if you start the room.`);
+  qualitySelect.addEventListener('change', showQualityHint);
+  showQualityHint();
+  const qualityRow = h('div', { class: 'quality-row' }, field('Room style', qualitySelect), qualityHint);
+
   const micSelect = h('select', { class: 'input', 'aria-label': 'Microphone' });
   const cameraSelect = h('select', { class: 'input', 'aria-label': 'Camera' });
   const speakerSelect = h('select', { class: 'input', 'aria-label': 'Speaker' });
@@ -83,7 +98,14 @@ export function showLobby(root: HTMLElement, room: string, onJoined: (init: Call
     h('h1', null, 'Join ', h('span', { class: 'room-name' }, room)),
     field('Your name', nameInput),
     keyArea,
-    h('div', { class: 'devices' }, field('Microphone', micSelect), field('Camera', cameraSelect), speakerRow),
+    h(
+      'details',
+      { class: 'devices' },
+      h('summary', null, 'Camera and microphone'),
+      field('Microphone', micSelect),
+      field('Camera', cameraSelect),
+      speakerRow,
+    ),
     notice,
     joinButton,
     waiting,
@@ -251,6 +273,7 @@ export function showLobby(root: HTMLElement, room: string, onJoined: (init: Call
             'Forget key',
           ),
         ),
+        qualityRow,
       );
       return;
     }
@@ -259,6 +282,7 @@ export function showLobby(root: HTMLElement, room: string, onJoined: (init: Call
       { class: 'key-details', open },
       h('summary', null, 'I have a host key'),
       keyInput,
+      qualityRow,
     );
     keyArea.replaceChildren(details);
   }
@@ -291,10 +315,14 @@ export function showLobby(root: HTMLElement, room: string, onJoined: (init: Call
     say('');
   }
 
+  function selectedQuality(): Quality {
+    return isQuality(qualitySelect.value) ? qualitySelect.value : QUALITIES[0]!.id;
+  }
+
   async function attempt(id: number, name: string, key: string): Promise<void> {
     let grant: JoinGrant;
     try {
-      grant = await join(room, name, key || undefined);
+      grant = await join(room, name, key || undefined, selectedQuality());
     } catch (error) {
       if (id !== attemptId) return;
       if (error instanceof ApiError && error.code === 'waiting_for_host') {
@@ -317,7 +345,10 @@ export function showLobby(root: HTMLElement, room: string, onJoined: (init: Call
     }
     if (id !== attemptId) return;
 
-    if (key) storage.setKey(key);
+    if (key) {
+      storage.setKey(key);
+      storage.setQuality(selectedQuality());
+    }
     stopWatching();
     onJoined({ room, name, grant, key: grant.role === 'member' ? key : '', audio, video, choices, cameraOn, micOn });
   }

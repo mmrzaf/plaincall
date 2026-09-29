@@ -12,7 +12,7 @@ import {
   Track,
   setLogLevel,
 } from 'livekit-client';
-import { ApiError, endRoom, removeParticipant, setRoomLocked, type JoinGrant } from '../api';
+import { ApiError, endRoom, muteGuests, muteParticipant, removeParticipant, setRoomLocked, type JoinGrant } from '../api';
 import {
   cameraOptions,
   deviceErrorMessage,
@@ -22,9 +22,11 @@ import {
 } from '../devices';
 import { confirmDialog, h, setText } from '../dom';
 import { icon, type IconName } from '../icons';
+import { QUALITIES, cameraPublish, screenShareSettings } from '../quality';
 import { roomUrl } from '../rooms';
 import { storage, type DeviceChoices, type DeviceKind } from '../storage';
-import { PeoplePanel, SettingsPanel, type Panel } from './panels';
+import { CHAT_TOPIC, SendLimiter, cleanChatText, decodeChat, encodeChat, type ChatMessage } from '../chat';
+import { ChatPanel, PeoplePanel, SettingsPanel, type Panel } from './panels';
 import { showMessage } from './message';
 import { Stage, displayName } from './tiles';
 
@@ -54,6 +56,7 @@ setLogLevel(LogLevel.error);
 export async function startCall(root: HTMLElement, init: CallInit): Promise<void> {
   const { grant } = init;
   const isMember = grant.role === 'member';
+  const quality = grant.quality;
   const choices = init.choices;
   let mirror = storage.getPreferences().mirror;
   let audioOnly = false;
@@ -65,18 +68,23 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
   let wakeLock: WakeLockSentinel | undefined;
 
   const room = new Room({
-    adaptiveStream: true,
+    // Ask for the layer that matches the viewer's real screen, so text stays sharp.
+    adaptiveStream: { pixelDensity: 'screen' },
     dynacast: true,
     stopLocalTrackOnUnpublish: true,
     publishDefaults: { audioPreset: AudioPresets.speech, dtx: true, red: true, simulcast: true },
     audioCaptureDefaults: microphoneOptions(choices.audioinput),
-    videoCaptureDefaults: cameraOptions(choices.videoinput),
+    videoCaptureDefaults: cameraOptions(choices.videoinput, quality),
   });
   const local = room.localParticipant;
 
   // ---- Elements -----------------------------------------------------------
 
-  const stage = new Stage();
+  let pinned: string | undefined;
+  const stage = new Stage((identity) => {
+    pinned = pinned === identity ? undefined : identity;
+    schedule();
+  });
   const audioSink = h('div', { hidden: true });
   const connectionBanner = h('div', { class: 'banner', role: 'status' }, 'Connecting…');
   const audioBanner = h(
@@ -88,11 +96,14 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
 
   const lockBadge = h('span', { class: 'chip warn', hidden: true }, icon('lock', 13), 'Locked');
   const audioOnlyBadge = h('span', { class: 'chip', hidden: true }, 'Audio only');
+  const qualityLabel = QUALITIES.find((q) => q.id === quality)?.label ?? '';
+  const qualityBadge = h('span', { class: 'chip', title: 'Room style' }, qualityLabel);
   const copyButton = h('button', { class: 'btn compact', type: 'button', onclick: () => void copyLink() }, icon('copy', 16), 'Copy link');
 
   const micButton = control();
   const cameraButton = control();
   const shareButton = control();
+  const chatButton = control();
   const peopleButton = control();
   const settingsButton = control();
   const leaveButton = control('leave');
@@ -104,6 +115,8 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
     isMember,
     {
       remove: (participant) => void removeFromCall(participant),
+      mute: (participant) => void muteInCall(participant),
+      muteGuests: () => void muteEveryGuest(),
       toggleLock: () => void toggleLock(),
       end: () => void endForEveryone(),
     },
@@ -122,7 +135,11 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
     mirror,
     () => openPanel(null),
   );
-  const panels: Record<'people' | 'settings', Panel> = { people: people.panel, settings: settings.panel };
+  const sendLimit = new SendLimiter();
+  let unread = 0;
+  let messageCount = 0;
+  const chat = new ChatPanel(sendChat, () => openPanel(null));
+  const panels: Record<'people' | 'settings' | 'chat', Panel> = { people: people.panel, settings: settings.panel, chat: chat.panel };
 
   root.replaceChildren(
     h(
@@ -132,16 +149,17 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
         'header',
         { class: 'topbar' },
         h('span', { class: 'room-title' }, init.room),
+        qualityBadge,
         lockBadge,
         audioOnlyBadge,
         h('span', { class: 'spacer' }),
         copyButton,
       ),
-      h('div', { class: 'call-body' }, stage.el, people.panel.el, settings.panel.el),
+      h('div', { class: 'call-body' }, stage.el, chat.panel.el, people.panel.el, settings.panel.el),
       connectionBanner,
       audioBanner,
       toastEl,
-      h('footer', { class: 'controls' }, micButton, cameraButton, shareButton, peopleButton, settingsButton, leaveButton),
+      h('footer', { class: 'controls' }, micButton, cameraButton, shareButton, chatButton, peopleButton, settingsButton, leaveButton),
       audioSink,
     ),
   );
@@ -168,7 +186,8 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
   }
 
   function render(): void {
-    stage.update(room, { mirrorSelf: mirror });
+    if (pinned && pinned !== local.identity && !room.remoteParticipants.has(pinned)) pinned = undefined; // they left
+    stage.update(room, { mirrorSelf: mirror, pinned });
     const locked = isLocked();
     lockBadge.hidden = !locked;
     audioOnlyBadge.hidden = !audioOnly;
@@ -189,6 +208,8 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
       label: sharing ? 'Stop sharing' : 'Share',
       active: sharing,
     });
+    setControl(chatButton, { icon: 'message', label: 'Chat', active: chat.panel.open });
+    if (unread > 0) chatButton.append(h('span', { class: 'count', 'aria-label': `${unread} unread` }, unread > 9 ? '9+' : String(unread)));
     setControl(peopleButton, { icon: 'users', label: 'People', active: people.panel.open });
     const count = h('span', { class: 'count' }, String(room.remoteParticipants.size + 1));
     peopleButton.append(count);
@@ -196,11 +217,15 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
     setControl(leaveButton, { icon: 'phoneOff', label: 'Leave' });
   }
 
-  function openPanel(which: 'people' | 'settings' | null): void {
+  function openPanel(which: 'people' | 'settings' | 'chat' | null): void {
     for (const [name, panel] of Object.entries(panels)) {
       panel.open = name === which && !panel.open;
     }
     if (settings.panel.open) void settings.refresh(room);
+    if (chat.panel.open) {
+      unread = 0;
+      chat.focus();
+    }
     render();
   }
 
@@ -237,21 +262,32 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
         // Unpublishing stops the camera, so its light goes off.
         await local.unpublishTrack(current, true);
       } else {
-        await local.setCameraEnabled(true, cameraOptions(room.getActiveDevice('videoinput') ?? choices.videoinput));
+        await local.setCameraEnabled(
+          true,
+          cameraOptions(room.getActiveDevice('videoinput') ?? choices.videoinput, quality),
+          cameraPublish(quality),
+        );
       }
     }, (error) => deviceErrorMessage(error, 'camera'));
 
-  const toggleShare = (): Promise<void> =>
-    attempt(
+  const toggleShare = (): Promise<void> => {
+    const { capture, publish } = screenShareSettings(quality);
+    return attempt(
       () =>
-        local.setScreenShareEnabled(!local.isScreenShareEnabled, {
-          audio: true,
-          systemAudio: 'include',
-          selfBrowserSurface: 'exclude',
-          surfaceSwitching: 'include',
-        }),
+        local.setScreenShareEnabled(
+          !local.isScreenShareEnabled,
+          {
+            audio: true,
+            systemAudio: 'include',
+            selfBrowserSurface: 'exclude',
+            surfaceSwitching: 'include',
+            ...capture,
+          },
+          publish,
+        ),
       (error) => (isScreenShareCancelled(error) ? '' : deviceErrorMessage(error, 'screen')),
     );
+  };
 
   async function switchDevice(kind: DeviceKind, deviceId: string): Promise<void> {
     choices[kind] = deviceId;
@@ -289,6 +325,28 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
     }
   }
 
+  /** Sends a chat message to everyone. Returns true when it went out. */
+  async function sendChat(raw: string): Promise<boolean> {
+    const text = cleanChatText(raw);
+    if (text === null) return false;
+    if (!sendLimit.allow()) {
+      toast('You are sending messages too fast. Wait a moment.', 'error');
+      return false;
+    }
+    try {
+      await local.publishData(encodeChat(text), { reliable: true, topic: CHAT_TOPIC });
+    } catch {
+      toast('The message could not be sent.', 'error');
+      return false;
+    }
+    chat.add(message(local, text, true));
+    return true;
+  }
+
+  function message(from: Participant, text: string, mine: boolean): ChatMessage {
+    return { id: ++messageCount, from: from.identity, name: displayName(from), text, at: new Date(), mine };
+  }
+
   // ---- Member actions -----------------------------------------------------
 
   async function asMember(action: () => Promise<void>): Promise<void> {
@@ -318,6 +376,20 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
     });
   }
 
+  async function muteInCall(participant: Participant): Promise<void> {
+    const name = displayName(participant);
+    await asMember(async () => {
+      await muteParticipant(init.room, participant.identity, init.key);
+      toast(`${name} was muted.`);
+    });
+  }
+
+  const muteEveryGuest = (): Promise<void> =>
+    asMember(async () => {
+      const { muted } = await muteGuests(init.room, init.key);
+      toast(muted === 0 ? 'Every guest is already muted.' : muted === 1 ? '1 guest was muted.' : `${muted} guests were muted.`);
+    });
+
   const toggleLock = (): Promise<void> => asMember(() => setRoomLocked(init.room, !isLocked(), init.key));
 
   async function endForEveryone(): Promise<void> {
@@ -334,6 +406,7 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
   micButton.addEventListener('click', () => void toggleMicrophone());
   cameraButton.addEventListener('click', () => void toggleCamera());
   shareButton.addEventListener('click', () => void toggleShare());
+  chatButton.addEventListener('click', () => openPanel('chat'));
   peopleButton.addEventListener('click', () => openPanel('people'));
   settingsButton.addEventListener('click', () => openPanel('settings'));
   leaveButton.addEventListener('click', () => {
@@ -362,6 +435,15 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
     })
     .on(RoomEvent.TrackUnsubscribed, (track) => {
       track.detach().forEach((element) => element.remove());
+      schedule();
+    })
+    .on(RoomEvent.DataReceived, (payload, participant, _kind, topic) => {
+      // Only messages from a person in the room count. LiveKit sets who sent it.
+      if (topic !== CHAT_TOPIC || !participant) return;
+      const text = decodeChat(payload);
+      if (text === null) return;
+      chat.add(message(participant, text, false));
+      if (!chat.panel.open) unread++;
       schedule();
     })
     .on(RoomEvent.TrackMuted, redraw)
@@ -448,8 +530,15 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
         .catch((error) => toast(deviceErrorMessage(error, 'microphone'), 'error'));
     }
     if (init.video) {
+      // The preview was opened before the room's style was known. Reopen the
+      // camera when the style asks for a different picture size.
+      const wanted = cameraOptions(undefined, quality).resolution?.height;
+      const settings = init.video.mediaStreamTrack.getSettings();
+      if (wanted && settings.height && settings.height !== wanted) {
+        await init.video.restartTrack(cameraOptions(settings.deviceId, quality)).catch(() => undefined);
+      }
       await local
-        .publishTrack(init.video, { source: Track.Source.Camera })
+        .publishTrack(init.video, { source: Track.Source.Camera, ...cameraPublish(quality) })
         .catch((error) => toast(deviceErrorMessage(error, 'camera'), 'error'));
     }
   }

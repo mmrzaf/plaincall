@@ -35,6 +35,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.TrustProxyHeaders {
 		t.Error("TrustProxyHeaders should default to false")
 	}
+	if cfg.MaxParticipants != DefaultMaxParticipants {
+		t.Errorf("MaxParticipants = %d, want %d", cfg.MaxParticipants, DefaultMaxParticipants)
+	}
 	if label, ok := cfg.Keys.Match("0123456789abcdef"); !ok || label != "alice" {
 		t.Errorf("Match = %q, %v", label, ok)
 	}
@@ -54,6 +57,24 @@ func TestLoadExplicitAPIURL(t *testing.T) {
 	}
 	if !cfg.TrustProxyHeaders || cfg.Addr != "127.0.0.1:9000" {
 		t.Errorf("unexpected config: %+v", cfg)
+	}
+}
+
+func TestMaxParticipants(t *testing.T) {
+	for raw, want := range map[string]int{"2": 2, "8": 8, " 50 ": 50, "500": 500} {
+		values := validEnv()
+		values["PLAINCALL_MAX_PARTICIPANTS"] = raw
+		cfg, err := Load(env(values))
+		if err != nil || cfg.MaxParticipants != want {
+			t.Errorf("PLAINCALL_MAX_PARTICIPANTS=%q: got %d, %v; want %d", raw, cfg.MaxParticipants, err, want)
+		}
+	}
+	for _, raw := range []string{"1", "0", "-3", "501", "many", "8.5"} {
+		values := validEnv()
+		values["PLAINCALL_MAX_PARTICIPANTS"] = raw
+		if _, err := Load(env(values)); err == nil || !strings.Contains(err.Error(), "PLAINCALL_MAX_PARTICIPANTS") {
+			t.Errorf("PLAINCALL_MAX_PARTICIPANTS=%q was accepted: %v", raw, err)
+		}
 	}
 }
 
