@@ -124,10 +124,10 @@ func (c *Client) JoinToken(room, name string, role Role) (string, error) {
 		Name:       name,
 		Attributes: map[string]string{RoleAttribute: string(role)},
 		Video: videoGrant{
-			Room:           room,
-			RoomJoin:       true,
-			CanPublish:     new(true),
-			CanSubscribe:   new(true),
+			Room:         room,
+			RoomJoin:     true,
+			CanPublish:   new(true),
+			CanSubscribe: new(true),
 			// Data messages carry chat. LiveKit tells receivers who sent each one,
 			// so a sender cannot pose as someone else.
 			CanPublishData: new(true),
