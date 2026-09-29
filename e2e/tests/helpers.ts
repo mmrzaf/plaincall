@@ -31,6 +31,18 @@ export async function newUser(
       }
     }, options.preferences);
   }
+  // Remember every peer connection, so tests can read what is really sent.
+  await context.addInitScript(() => {
+    const w = window as unknown as { __pcs: RTCPeerConnection[] };
+    w.__pcs = [];
+    const Original = window.RTCPeerConnection;
+    window.RTCPeerConnection = function (this: unknown, ...args: ConstructorParameters<typeof RTCPeerConnection>) {
+      const pc = new Original(...args);
+      w.__pcs.push(pc);
+      return pc;
+    } as unknown as typeof RTCPeerConnection;
+    window.RTCPeerConnection.prototype = Original.prototype;
+  });
   const page = await context.newPage();
   return { context, page };
 }
@@ -55,10 +67,11 @@ export async function joinCall(
   page: Page,
   room: string,
   name: string,
-  options: { key?: string; count?: number } = {},
+  options: { key?: string; count?: number; quality?: string } = {},
 ): Promise<void> {
   await openLobby(page, room, name);
   if (options.key) await useKey(page, options.key);
+  if (options.quality) await page.getByLabel('Room style').selectOption(options.quality);
   await page.getByRole('button', { name: 'Join call' }).click();
   await expect(tiles(page)).toHaveCount(options.count ?? 1);
 }
@@ -90,6 +103,45 @@ export async function openSettings(page: Page): Promise<void> {
     await page.getByRole('button', { name: 'Settings' }).click();
   }
   await expect(page.locator('aside[aria-label="Settings"]')).toBeVisible();
+}
+
+export interface VideoSender {
+  /** One entry per published layer, highest quality last. */
+  layers: { rid?: string; maxBitrate?: number; maxFramerate?: number }[];
+  screen: boolean;
+}
+
+/** What this page is really sending: each video sender's layers. */
+export async function videoSenders(page: Page): Promise<VideoSender[]> {
+  return page.evaluate(() => {
+    const pcs = (window as unknown as { __pcs: RTCPeerConnection[] }).__pcs;
+    const out: VideoSender[] = [];
+    for (const pc of pcs) {
+      for (const sender of pc.getSenders()) {
+        if (sender.track?.kind !== 'video') continue;
+        const encodings = sender.getParameters().encodings ?? [];
+        out.push({
+          layers: encodings.map((e) => ({ rid: e.rid, maxBitrate: e.maxBitrate, maxFramerate: e.maxFramerate })),
+          screen: sender.track.contentHint === 'text' || sender.track.contentHint === 'motion' || sender.track.contentHint === 'detail',
+        });
+      }
+    }
+    return out;
+  });
+}
+
+/** Picture sizes this page is receiving, one per incoming video. */
+export async function receivedFrames(page: Page): Promise<{ width: number; fps: number }[]> {
+  return page.evaluate(async () => {
+    const pcs = (window as unknown as { __pcs: RTCPeerConnection[] }).__pcs;
+    const out: { width: number; fps: number }[] = [];
+    for (const pc of pcs) {
+      (await pc.getStats()).forEach((r) => {
+        if (r.type === 'inbound-rtp' && r.kind === 'video' && r.frameWidth) out.push({ width: r.frameWidth, fps: r.framesPerSecond ?? 0 });
+      });
+    }
+    return out;
+  });
 }
 
 // ---- LiveKit cleanup --------------------------------------------------------
