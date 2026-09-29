@@ -4,6 +4,8 @@ const chromiumArgs = [
   '--use-fake-device-for-media-stream',
   '--use-fake-ui-for-media-stream',
   '--autoplay-policy=no-user-gesture-required',
+  // The fake microphone beeps. The tests check that audio arrives, not how it sounds.
+  '--mute-audio',
   '--auto-select-desktop-capture-source=Entire screen',
 ];
 
@@ -31,6 +33,7 @@ export default defineConfig({
           firefoxUserPrefs: {
             'media.navigator.streams.fake': true,
             'media.navigator.permission.disabled': true,
+            'media.volume_scale': '0.0',
           },
         },
       },
