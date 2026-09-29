@@ -22,12 +22,17 @@ type joinRequest struct {
 	Room string `json:"room"`
 	Name string `json:"name"`
 	Key  string `json:"key"`
+	// Quality is the preset for a room the member starts. It is ignored when the
+	// room already exists.
+	Quality string `json:"quality"`
 }
 
 type joinResponse struct {
 	URL   string   `json:"url"`
 	Token string   `json:"token"`
 	Role  rtc.Role `json:"role"`
+	// Quality is the room's preset, which the browser applies to its video.
+	Quality rtc.Quality `json:"quality"`
 }
 
 type kickRequest struct {
@@ -67,7 +72,14 @@ func (s *Server) join(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	quality, ok := rtc.ParseQuality(req.Quality)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid_quality", "Choose presentation, meeting or low.")
+		return
+	}
+
 	role := rtc.RoleGuest
+	var state rtc.Room
 	if req.Key != "" {
 		label, ok := s.authenticate(w, r, req.Key)
 		if !ok {
@@ -75,6 +87,11 @@ func (s *Server) join(w http.ResponseWriter, r *http.Request) {
 		}
 		role = rtc.RoleMember
 		s.log.Info("member joining", "room", room, "key", label)
+		var err error
+		if state, err = s.lk.OpenRoom(r.Context(), room, quality, s.cfg.MaxParticipants); err != nil {
+			s.livekitFailed(w, "open room", err)
+			return
+		}
 	} else {
 		presence, err := s.lk.Presence(r.Context(), room)
 		if err != nil {
@@ -89,6 +106,14 @@ func (s *Server) join(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "waiting_for_host", "The host has not arrived yet.")
 			return
 		}
+		state = presence.Room
+	}
+	if state.Participants >= s.cfg.MaxParticipants {
+		writeError(w, http.StatusConflict, "room_full", "This room is full.")
+		return
+	}
+	if state.Quality != "" {
+		quality = state.Quality
 	}
 
 	token, err := s.lk.JoinToken(room, name, role)
@@ -97,7 +122,7 @@ func (s *Server) join(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "Could not join the room.")
 		return
 	}
-	writeJSON(w, http.StatusOK, joinResponse{URL: s.cfg.LiveKitURL, Token: token, Role: role})
+	writeJSON(w, http.StatusOK, joinResponse{URL: s.cfg.LiveKitURL, Token: token, Role: role, Quality: quality})
 }
 
 func (s *Server) kick(w http.ResponseWriter, r *http.Request) {

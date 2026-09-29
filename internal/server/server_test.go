@@ -20,12 +20,21 @@ type fakeLiveKit struct {
 	presence    rtc.Presence
 	presenceErr error
 	actionErr   error
+	room        rtc.Room // what OpenRoom reports
+	openErr     error
 
 	presenceCalls int
+	opened        []openCall
 	tokens        []tokenCall
 	removed       []string
 	ended         []string
 	locked        []bool
+}
+
+type openCall struct {
+	room    string
+	quality rtc.Quality
+	max     int
 }
 
 type tokenCall struct {
@@ -41,6 +50,11 @@ func (f *fakeLiveKit) JoinToken(room, name string, role rtc.Role) (string, error
 func (f *fakeLiveKit) Presence(context.Context, string) (rtc.Presence, error) {
 	f.presenceCalls++
 	return f.presence, f.presenceErr
+}
+
+func (f *fakeLiveKit) OpenRoom(_ context.Context, room string, quality rtc.Quality, max int) (rtc.Room, error) {
+	f.opened = append(f.opened, openCall{room, quality, max})
+	return f.room, f.openErr
 }
 
 func (f *fakeLiveKit) Remove(_ context.Context, room, identity string) error {
@@ -70,10 +84,11 @@ func newHarness(t *testing.T, mutate ...func(*config.Config)) *harness {
 		t.Fatal(err)
 	}
 	cfg := config.Config{
-		Addr:          ":0",
-		Keys:          keys,
-		LiveKitURL:    "wss://rtc.example.com",
-		LiveKitAPIURL: "http://livekit:7880",
+		Addr:            ":0",
+		Keys:            keys,
+		LiveKitURL:      "wss://rtc.example.com",
+		LiveKitAPIURL:   "http://livekit:7880",
+		MaxParticipants: 20,
 	}
 	for _, m := range mutate {
 		m(&cfg)
@@ -154,13 +169,13 @@ func TestGuestJoinsWhileHostPresent(t *testing.T) {
 
 func TestGuestRefusedWhenLocked(t *testing.T) {
 	h := newHarness(t)
-	h.lk.presence = rtc.Presence{MemberPresent: true, Locked: true}
+	h.lk.presence = rtc.Presence{Room: rtc.Room{Locked: true}, MemberPresent: true}
 	expectError(t, h.post("/api/join", `{"room":"standup","name":"Ada"}`), http.StatusForbidden, "room_locked")
 }
 
 func TestMemberJoinsAnyRoom(t *testing.T) {
 	h := newHarness(t)
-	h.lk.presence = rtc.Presence{Locked: true} // nobody there, and locked
+	h.lk.room = rtc.Room{Locked: true} // nobody there, and locked
 	rec := h.post("/api/join", `{"room":"standup","name":"Alice","key":"`+memberKey+`"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
@@ -171,6 +186,75 @@ func TestMemberJoinsAnyRoom(t *testing.T) {
 	if h.lk.presenceCalls != 0 {
 		t.Error("members should not depend on the room's state")
 	}
+}
+
+func TestMemberStartsRoomWithPresetAndLimit(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.MaxParticipants = 6 })
+	rec := h.post("/api/join", `{"room":"standup","name":"Alice","key":"`+memberKey+`","quality":"low"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	want := openCall{room: "standup", quality: rtc.QualityLow, max: 6}
+	if len(h.lk.opened) != 1 || h.lk.opened[0] != want {
+		t.Errorf("opened = %+v, want %+v", h.lk.opened, want)
+	}
+	// The room did not exist, so it was created with the requested preset.
+	h.lk.room = rtc.Room{Quality: rtc.QualityLow}
+	if got := decode[joinResponse](t, h.post("/api/join", `{"room":"standup","name":"Alice","key":"`+memberKey+`","quality":"low"}`)); got.Quality != rtc.QualityLow {
+		t.Errorf("quality = %q", got.Quality)
+	}
+}
+
+func TestExistingRoomKeepsItsPreset(t *testing.T) {
+	h := newHarness(t)
+	h.lk.room = rtc.Room{Quality: rtc.QualityMeeting}
+	got := decode[joinResponse](t, h.post("/api/join", `{"room":"standup","name":"Alice","key":"`+memberKey+`","quality":"low"}`))
+	if got.Quality != rtc.QualityMeeting {
+		t.Errorf("a second host's request changed the preset: %q", got.Quality)
+	}
+}
+
+func TestDefaultPreset(t *testing.T) {
+	h := newHarness(t)
+	got := decode[joinResponse](t, h.post("/api/join", `{"room":"standup","name":"Alice","key":"`+memberKey+`"}`))
+	if got.Quality != rtc.DefaultQuality || h.lk.opened[0].quality != rtc.DefaultQuality {
+		t.Errorf("response %q, opened %+v; want the default preset", got.Quality, h.lk.opened)
+	}
+}
+
+func TestGuestGetsTheRoomsPreset(t *testing.T) {
+	h := newHarness(t)
+	h.lk.presence = rtc.Presence{Room: rtc.Room{Quality: rtc.QualityLow}, MemberPresent: true}
+	got := decode[joinResponse](t, h.post("/api/join", `{"room":"standup","name":"Ada","quality":"meeting"}`))
+	if got.Quality != rtc.QualityLow {
+		t.Errorf("a guest chose the preset: %q", got.Quality)
+	}
+	if len(h.lk.opened) != 0 {
+		t.Error("a guest must not create rooms")
+	}
+}
+
+func TestFullRoom(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.MaxParticipants = 3 })
+
+	h.lk.presence = rtc.Presence{Room: rtc.Room{Participants: 3}, MemberPresent: true}
+	expectError(t, h.post("/api/join", `{"room":"standup","name":"Ada"}`), http.StatusConflict, "room_full")
+
+	h.lk.presence = rtc.Presence{Room: rtc.Room{Participants: 2}, MemberPresent: true}
+	if rec := h.post("/api/join", `{"room":"standup","name":"Ada"}`); rec.Code != http.StatusOK {
+		t.Errorf("one place left: %d %s", rec.Code, rec.Body.String())
+	}
+
+	h.lk.room = rtc.Room{Participants: 3}
+	expectError(t, h.post("/api/join", `{"room":"standup","name":"Alice","key":"`+memberKey+`"}`), http.StatusConflict, "room_full")
+}
+
+func TestFullRoomAnswersLockedAndWaitingFirst(t *testing.T) {
+	h := newHarness(t, func(c *config.Config) { c.MaxParticipants = 2 })
+	h.lk.presence = rtc.Presence{Room: rtc.Room{Participants: 2, Locked: true}, MemberPresent: true}
+	expectError(t, h.post("/api/join", `{"room":"standup","name":"Ada"}`), http.StatusForbidden, "room_locked")
+	h.lk.presence = rtc.Presence{Room: rtc.Room{Participants: 2}}
+	expectError(t, h.post("/api/join", `{"room":"standup","name":"Ada"}`), http.StatusConflict, "waiting_for_host")
 }
 
 func TestJoinValidation(t *testing.T) {
@@ -189,6 +273,7 @@ func TestJoinValidation(t *testing.T) {
 		{"name too long", `{"room":"standup","name":"` + strings.Repeat("a", 41) + `"}`, "invalid_name", 400},
 		{"name with control character", `{"room":"standup","name":"a\u0000b"}`, "invalid_name", 400},
 		{"name with direction override", `{"room":"standup","name":"a\u202eb"}`, "invalid_name", 400},
+		{"unknown preset", `{"room":"standup","name":"Ada","quality":"ultra"}`, "invalid_quality", 400},
 		{"unknown field", `{"room":"standup","name":"Ada","admin":true}`, "bad_request", 400},
 		{"not json", `hello`, "bad_request", 400},
 		{"two objects", `{"room":"standup","name":"Ada"}{}`, "bad_request", 400},

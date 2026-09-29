@@ -27,6 +27,7 @@ const (
 type LiveKit interface {
 	JoinToken(room, name string, role rtc.Role) (string, error)
 	Presence(ctx context.Context, room string) (rtc.Presence, error)
+	OpenRoom(ctx context.Context, room string, quality rtc.Quality, maxParticipants int) (rtc.Room, error)
 	Remove(ctx context.Context, room, identity string) error
 	End(ctx context.Context, room string) error
 	SetLocked(ctx context.Context, room string, locked bool) error
