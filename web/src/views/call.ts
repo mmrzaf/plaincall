@@ -25,7 +25,8 @@ import { icon, type IconName } from '../icons';
 import { QUALITIES, cameraPublish, screenShareSettings } from '../quality';
 import { roomUrl } from '../rooms';
 import { storage, type DeviceChoices, type DeviceKind } from '../storage';
-import { PeoplePanel, SettingsPanel, type Panel } from './panels';
+import { CHAT_TOPIC, SendLimiter, cleanChatText, decodeChat, encodeChat, type ChatMessage } from '../chat';
+import { ChatPanel, PeoplePanel, SettingsPanel, type Panel } from './panels';
 import { showMessage } from './message';
 import { Stage, displayName } from './tiles';
 
@@ -98,6 +99,7 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
   const micButton = control();
   const cameraButton = control();
   const shareButton = control();
+  const chatButton = control();
   const peopleButton = control();
   const settingsButton = control();
   const leaveButton = control('leave');
@@ -129,7 +131,11 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
     mirror,
     () => openPanel(null),
   );
-  const panels: Record<'people' | 'settings', Panel> = { people: people.panel, settings: settings.panel };
+  const sendLimit = new SendLimiter();
+  let unread = 0;
+  let messageCount = 0;
+  const chat = new ChatPanel(sendChat, () => openPanel(null));
+  const panels: Record<'people' | 'settings' | 'chat', Panel> = { people: people.panel, settings: settings.panel, chat: chat.panel };
 
   root.replaceChildren(
     h(
@@ -145,11 +151,11 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
         h('span', { class: 'spacer' }),
         copyButton,
       ),
-      h('div', { class: 'call-body' }, stage.el, people.panel.el, settings.panel.el),
+      h('div', { class: 'call-body' }, stage.el, chat.panel.el, people.panel.el, settings.panel.el),
       connectionBanner,
       audioBanner,
       toastEl,
-      h('footer', { class: 'controls' }, micButton, cameraButton, shareButton, peopleButton, settingsButton, leaveButton),
+      h('footer', { class: 'controls' }, micButton, cameraButton, shareButton, chatButton, peopleButton, settingsButton, leaveButton),
       audioSink,
     ),
   );
@@ -197,6 +203,8 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
       label: sharing ? 'Stop sharing' : 'Share',
       active: sharing,
     });
+    setControl(chatButton, { icon: 'message', label: 'Chat', active: chat.panel.open });
+    if (unread > 0) chatButton.append(h('span', { class: 'count', 'aria-label': `${unread} unread` }, unread > 9 ? '9+' : String(unread)));
     setControl(peopleButton, { icon: 'users', label: 'People', active: people.panel.open });
     const count = h('span', { class: 'count' }, String(room.remoteParticipants.size + 1));
     peopleButton.append(count);
@@ -204,11 +212,15 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
     setControl(leaveButton, { icon: 'phoneOff', label: 'Leave' });
   }
 
-  function openPanel(which: 'people' | 'settings' | null): void {
+  function openPanel(which: 'people' | 'settings' | 'chat' | null): void {
     for (const [name, panel] of Object.entries(panels)) {
       panel.open = name === which && !panel.open;
     }
     if (settings.panel.open) void settings.refresh(room);
+    if (chat.panel.open) {
+      unread = 0;
+      chat.focus();
+    }
     render();
   }
 
@@ -308,6 +320,28 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
     }
   }
 
+  /** Sends a chat message to everyone. Returns true when it went out. */
+  async function sendChat(raw: string): Promise<boolean> {
+    const text = cleanChatText(raw);
+    if (text === null) return false;
+    if (!sendLimit.allow()) {
+      toast('You are sending messages too fast. Wait a moment.', 'error');
+      return false;
+    }
+    try {
+      await local.publishData(encodeChat(text), { reliable: true, topic: CHAT_TOPIC });
+    } catch {
+      toast('The message could not be sent.', 'error');
+      return false;
+    }
+    chat.add(message(local, text, true));
+    return true;
+  }
+
+  function message(from: Participant, text: string, mine: boolean): ChatMessage {
+    return { id: ++messageCount, from: from.identity, name: displayName(from), text, at: new Date(), mine };
+  }
+
   // ---- Member actions -----------------------------------------------------
 
   async function asMember(action: () => Promise<void>): Promise<void> {
@@ -367,6 +401,7 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
   micButton.addEventListener('click', () => void toggleMicrophone());
   cameraButton.addEventListener('click', () => void toggleCamera());
   shareButton.addEventListener('click', () => void toggleShare());
+  chatButton.addEventListener('click', () => openPanel('chat'));
   peopleButton.addEventListener('click', () => openPanel('people'));
   settingsButton.addEventListener('click', () => openPanel('settings'));
   leaveButton.addEventListener('click', () => {
@@ -395,6 +430,15 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
     })
     .on(RoomEvent.TrackUnsubscribed, (track) => {
       track.detach().forEach((element) => element.remove());
+      schedule();
+    })
+    .on(RoomEvent.DataReceived, (payload, participant, _kind, topic) => {
+      // Only messages from a person in the room count. LiveKit sets who sent it.
+      if (topic !== CHAT_TOPIC || !participant) return;
+      const text = decodeChat(payload);
+      if (text === null) return;
+      chat.add(message(participant, text, false));
+      if (!chat.panel.open) unread++;
       schedule();
     })
     .on(RoomEvent.TrackMuted, redraw)

@@ -843,6 +843,75 @@ video {
   overflow-wrap: anywhere;
 }
 
+/* Chat: a scrolling list above a small message form. */
+.panel-body.chat {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+
+.chat-scroll {
+  flex: 1;
+  min-height: 0;
+  padding: 8px 16px;
+  overflow-y: auto;
+}
+
+.chat-list {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chat-message {
+  padding: 6px 0;
+}
+
+.chat-message.follow {
+  padding-top: 0;
+}
+
+.chat-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.chat-name {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.chat-message.mine .chat-name {
+  color: var(--accent);
+}
+
+.chat-text {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.chat-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 12px 16px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.chat-input {
+  flex: 1;
+  min-height: 44px;
+  max-height: 120px;
+  resize: none;
+}
+
 .muted-mic {
   display: grid;
   color: var(--muted);
