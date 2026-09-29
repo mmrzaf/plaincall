@@ -150,11 +150,12 @@ func TestPresence(t *testing.T) {
 		want         Presence
 	}{
 		{"room does not exist", `{"rooms":[]}`, "", Presence{}},
-		{"room without members", `{"rooms":[{"name":"x","metadata":""}]}`,
-			`{"participants":[{"state":"ACTIVE","attributes":{"role":"guest"}}]}`, Presence{}},
-		{"member present", `{"rooms":[{"name":"x"}]}`,
+		{"room without members", `{"rooms":[{"name":"x","metadata":"","numParticipants":1}]}`,
+			`{"participants":[{"state":"ACTIVE","attributes":{"role":"guest"}}]}`,
+			Presence{Room: Room{Participants: 1}}},
+		{"member present", `{"rooms":[{"name":"x","numParticipants":2}]}`,
 			`{"participants":[{"state":"ACTIVE","attributes":{"role":"guest"}},{"state":"JOINED","attributes":{"role":"member"}}]}`,
-			Presence{MemberPresent: true}},
+			Presence{Room: Room{Participants: 2}, MemberPresent: true}},
 		{"member still joining", `{"rooms":[{"name":"x"}]}`,
 			`{"participants":[{"state":"JOINING","attributes":{"role":"member"}}]}`, Presence{MemberPresent: true}},
 		{"disconnected member does not count", `{"rooms":[{"name":"x"}]}`,
@@ -162,7 +163,12 @@ func TestPresence(t *testing.T) {
 		{"participant without attributes", `{"rooms":[{"name":"x"}]}`,
 			`{"participants":[{"state":"ACTIVE"}]}`, Presence{}},
 		{"locked room", `{"rooms":[{"name":"x","metadata":"{\"locked\":true}"}]}`,
-			`{"participants":[{"state":"ACTIVE","attributes":{"role":"member"}}]}`, Presence{Locked: true, MemberPresent: true}},
+			`{"participants":[{"state":"ACTIVE","attributes":{"role":"member"}}]}`,
+			Presence{Room: Room{Locked: true}, MemberPresent: true}},
+		{"room with a preset", `{"rooms":[{"name":"x","metadata":"{\"quality\":\"low\"}"}]}`,
+			`{"participants":[]}`, Presence{Room: Room{Quality: QualityLow}}},
+		{"unknown preset is ignored", `{"rooms":[{"name":"x","metadata":"{\"quality\":\"ultra\"}"}]}`,
+			`{"participants":[]}`, Presence{}},
 		{"unreadable metadata is unlocked", `{"rooms":[{"name":"x","metadata":"not json"}]}`,
 			`{"participants":[]}`, Presence{}},
 	}
@@ -179,6 +185,43 @@ func TestPresence(t *testing.T) {
 				t.Errorf("Presence = %+v, want %+v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestParseQuality(t *testing.T) {
+	for raw, want := range map[string]Quality{"": DefaultQuality, "presentation": QualityPresentation, "meeting": QualityMeeting, "low": QualityLow} {
+		if got, ok := ParseQuality(raw); !ok || got != want {
+			t.Errorf("ParseQuality(%q) = %q, %v", raw, got, ok)
+		}
+	}
+	for _, raw := range []string{"ultra", "Presentation", " low"} {
+		if _, ok := ParseQuality(raw); ok {
+			t.Errorf("ParseQuality(%q) was accepted", raw)
+		}
+	}
+}
+
+func TestOpenRoom(t *testing.T) {
+	f, c := newFake(t)
+	f.responses["CreateRoom"] = `{"name":"standup","metadata":"{\"locked\":false,\"quality\":\"meeting\"}","numParticipants":3}`
+
+	room, err := c.OpenRoom(context.Background(), "standup", QualityLow, 12)
+	if err != nil {
+		t.Fatalf("OpenRoom: %v", err)
+	}
+	// The room already existed, so LiveKit's answer, not the request, decides.
+	if room != (Room{Quality: QualityMeeting, Participants: 3}) {
+		t.Errorf("room = %+v", room)
+	}
+	r := f.requests["CreateRoom"]
+	if r["name"] != "standup" || r["maxParticipants"] != float64(12) {
+		t.Errorf("CreateRoom request = %v", r)
+	}
+	if got := parseMetadata(r["metadata"].(string)); got.Quality != QualityLow || got.Locked {
+		t.Errorf("CreateRoom metadata = %v", r["metadata"])
+	}
+	if v := f.claims["CreateRoom"].Video; !v.RoomCreate || v.Room != "standup" {
+		t.Errorf("CreateRoom grant = %+v", v)
 	}
 }
 
@@ -238,6 +281,7 @@ func TestRemoveEndAndLock(t *testing.T) {
 		t.Errorf("DeleteRoom request = %v", f.requests["DeleteRoom"])
 	}
 
+	f.responses["ListRooms"] = `{"rooms":[{"name":"standup","metadata":"{\"quality\":\"low\"}"}]}`
 	if err := c.SetLocked(ctx, "standup", true); err != nil {
 		t.Fatalf("SetLocked: %v", err)
 	}
@@ -245,14 +289,20 @@ func TestRemoveEndAndLock(t *testing.T) {
 	if r["room"] != "standup" {
 		t.Errorf("UpdateRoomMetadata request = %v", r)
 	}
-	if !parseMetadata(r["metadata"].(string)).Locked {
-		t.Errorf("metadata = %v, want locked", r["metadata"])
+	// Locking must not erase the preset stored beside the flag.
+	if m := parseMetadata(r["metadata"].(string)); !m.Locked || m.Quality != QualityLow {
+		t.Errorf("metadata = %v, want locked and low", r["metadata"])
 	}
 	if err := c.SetLocked(ctx, "standup", false); err != nil {
 		t.Fatal(err)
 	}
-	if parseMetadata(f.requests["UpdateRoomMetadata"]["metadata"].(string)).Locked {
-		t.Error("metadata still locked after unlocking")
+	if m := parseMetadata(f.requests["UpdateRoomMetadata"]["metadata"].(string)); m.Locked || m.Quality != QualityLow {
+		t.Errorf("metadata = %v, want unlocked and low", f.requests["UpdateRoomMetadata"]["metadata"])
+	}
+
+	f.responses["ListRooms"] = `{"rooms":[]}`
+	if err := c.SetLocked(ctx, "gone", true); !errors.Is(err, ErrNotFound) {
+		t.Errorf("SetLocked on a missing room = %v, want ErrNotFound", err)
 	}
 }
 
