@@ -72,8 +72,8 @@ func TestJoinToken(t *testing.T) {
 	if v.CanPublish == nil || !*v.CanPublish || v.CanSubscribe == nil || !*v.CanSubscribe {
 		t.Errorf("participants should publish and subscribe: %+v", v)
 	}
-	if v.CanPublishData == nil || *v.CanPublishData {
-		t.Errorf("participants should not publish data: %+v", v)
+	if v.CanPublishData == nil || !*v.CanPublishData {
+		t.Errorf("participants should publish chat messages: %+v", v)
 	}
 	if len(v.CanPublishSources) != 4 {
 		t.Errorf("sources = %v", v.CanPublishSources)
