@@ -71,8 +71,9 @@ The web app is the only intended client.
 
 | Endpoint | Body | Result |
 | --- | --- | --- |
-| `POST /api/join` | `{"room", "name", "key"?}` | `{"url", "token", "role"}`, or `409 waiting_for_host`, `403 room_locked`, `401 invalid_key` |
+| `POST /api/join` | `{"room", "name", "key"?, "quality"?}` | `{"url", "token", "role", "quality"}`, or `409 waiting_for_host`, `409 room_full`, `403 room_locked`, `401 invalid_key`. Only a member starting a room chooses `quality` (`presentation`, `meeting` or `low`). |
 | `POST /api/rooms/{room}/kick` | `{"identity"}` | Removes a participant. Needs `Authorization: Bearer <key>`. |
+| `POST /api/rooms/{room}/mute` | `{"identity"}` or `{"all": true}` | Mutes one person's microphone, or every guest's. Needs a key. People can unmute themselves. |
 | `POST /api/rooms/{room}/lock` | `{"locked": true}` | Locks or unlocks the room. Needs a key. |
 | `POST /api/rooms/{room}/end` | none | Ends the call for everyone. Needs a key. |
 | `GET /healthz` | | `ok` |

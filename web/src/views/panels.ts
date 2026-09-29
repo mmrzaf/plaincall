@@ -35,6 +35,8 @@ export class Panel {
 
 export interface PeopleActions {
   remove(participant: Participant): void;
+  mute(participant: Participant): void;
+  muteGuests(): void;
   toggleLock(): void;
   end(): void;
 }
@@ -43,6 +45,7 @@ export interface PeopleActions {
 export class PeoplePanel {
   readonly panel: Panel;
   private readonly list = h('ul', { class: 'people' });
+  private readonly muteAllButton = h('button', { class: 'btn wide', type: 'button' }, icon('micOff', 18), 'Mute all guests');
   private readonly lockButton = h('button', { class: 'btn wide', type: 'button' });
   private readonly endButton = h('button', { class: 'btn danger wide', type: 'button' }, 'End call for everyone');
 
@@ -54,12 +57,14 @@ export class PeoplePanel {
     this.panel = new Panel('People', onClose);
     this.panel.body.append(this.list);
     if (isMember) {
+      this.muteAllButton.addEventListener('click', () => actions.muteGuests());
       this.lockButton.addEventListener('click', () => actions.toggleLock());
       this.endButton.addEventListener('click', () => actions.end());
       this.panel.body.append(
         h(
           'div',
           { class: 'panel-actions' },
+          this.muteAllButton,
           this.lockButton,
           h('p', { class: 'muted small' }, 'A locked room lets no new guests in. Hosts can always join.'),
           this.endButton,
@@ -71,6 +76,7 @@ export class PeoplePanel {
   update(room: Room, locked: boolean, busy: boolean): void {
     if (this.isMember) {
       this.lockButton.replaceChildren(icon(locked ? 'lockOpen' : 'lock', 18), locked ? 'Unlock room' : 'Lock room');
+      this.muteAllButton.disabled = busy;
       this.lockButton.disabled = busy;
       this.endButton.disabled = busy;
     }
@@ -93,6 +99,20 @@ export class PeoplePanel {
             host ? h('span', { class: 'chip' }, 'Host') : null,
           ),
           participant.isMicrophoneEnabled ? null : h('span', { class: 'muted-mic', title: 'Muted' }, icon('micOff', 16)),
+          this.isMember && !local && participant.isMicrophoneEnabled
+            ? h(
+                'button',
+                {
+                  class: 'icon-btn',
+                  type: 'button',
+                  'aria-label': `Mute ${name}`,
+                  title: 'Mute microphone',
+                  disabled: busy,
+                  onclick: () => this.actions.mute(participant),
+                },
+                icon('micOff', 18),
+              )
+            : null,
           this.isMember && !local
             ? h(
                 'button',

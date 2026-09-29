@@ -12,7 +12,7 @@ import {
   Track,
   setLogLevel,
 } from 'livekit-client';
-import { ApiError, endRoom, removeParticipant, setRoomLocked, type JoinGrant } from '../api';
+import { ApiError, endRoom, muteGuests, muteParticipant, removeParticipant, setRoomLocked, type JoinGrant } from '../api';
 import {
   cameraOptions,
   deviceErrorMessage,
@@ -109,6 +109,8 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
     isMember,
     {
       remove: (participant) => void removeFromCall(participant),
+      mute: (participant) => void muteInCall(participant),
+      muteGuests: () => void muteEveryGuest(),
       toggleLock: () => void toggleLock(),
       end: () => void endForEveryone(),
     },
@@ -334,6 +336,20 @@ export async function startCall(root: HTMLElement, init: CallInit): Promise<void
       toast(`${name} was removed.`);
     });
   }
+
+  async function muteInCall(participant: Participant): Promise<void> {
+    const name = displayName(participant);
+    await asMember(async () => {
+      await muteParticipant(init.room, participant.identity, init.key);
+      toast(`${name} was muted.`);
+    });
+  }
+
+  const muteEveryGuest = (): Promise<void> =>
+    asMember(async () => {
+      const { muted } = await muteGuests(init.room, init.key);
+      toast(muted === 0 ? 'Every guest is already muted.' : muted === 1 ? '1 guest was muted.' : `${muted} guests were muted.`);
+    });
 
   const toggleLock = (): Promise<void> => asMember(() => setRoomLocked(init.room, !isLocked(), init.key));
 

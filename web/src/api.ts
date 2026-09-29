@@ -70,6 +70,16 @@ export function removeParticipant(room: string, identity: string, key: string): 
   return request<void>(`/api/rooms/${encodeURIComponent(room)}/kick`, { identity }, key);
 }
 
+/** Mutes one person's microphone. They can unmute themselves. */
+export function muteParticipant(room: string, identity: string, key: string): Promise<void> {
+  return request<void>(`/api/rooms/${encodeURIComponent(room)}/mute`, { identity }, key);
+}
+
+/** Mutes every guest's microphone. Members are left alone. */
+export function muteGuests(room: string, key: string): Promise<{ muted: number }> {
+  return request<{ muted: number }>(`/api/rooms/${encodeURIComponent(room)}/mute`, { all: true }, key);
+}
+
 export function endRoom(room: string, key: string): Promise<void> {
   return request<void>(`/api/rooms/${encodeURIComponent(room)}/end`, undefined, key);
 }
