@@ -39,6 +39,16 @@ type kickRequest struct {
 	Identity string `json:"identity"`
 }
 
+// muteRequest names one person, or asks to mute every guest.
+type muteRequest struct {
+	Identity string `json:"identity"`
+	All      bool   `json:"all"`
+}
+
+type muteResponse struct {
+	Muted int `json:"muted"`
+}
+
 type lockRequest struct {
 	Locked bool `json:"locked"`
 }
@@ -144,6 +154,34 @@ func (s *Server) kick(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("participant removed", "room", room, "key", label)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) mute(w http.ResponseWriter, r *http.Request) {
+	room, label, ok := s.memberRequest(w, r)
+	if !ok {
+		return
+	}
+	var req muteRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.All == (req.Identity != "") || len(req.Identity) > 128 {
+		writeError(w, http.StatusBadRequest, "invalid_target", "Choose one person, or all guests.")
+		return
+	}
+	muted := 1
+	var err error
+	if req.All {
+		muted, err = s.lk.MuteGuests(r.Context(), room)
+	} else {
+		err = s.lk.MuteMicrophone(r.Context(), room, req.Identity)
+	}
+	if err != nil {
+		s.livekitFailed(w, "mute", err)
+		return
+	}
+	s.log.Info("microphones muted", "room", room, "all", req.All, "key", label)
+	writeJSON(w, http.StatusOK, muteResponse{Muted: muted})
 }
 
 func (s *Server) end(w http.ResponseWriter, r *http.Request) {

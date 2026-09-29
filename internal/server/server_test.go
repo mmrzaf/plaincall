@@ -28,6 +28,9 @@ type fakeLiveKit struct {
 	tokens        []tokenCall
 	removed       []string
 	ended         []string
+	mutedOne      []string
+	mutedAll      []string
+	guestsMuted   int
 	locked        []bool
 }
 
@@ -65,6 +68,16 @@ func (f *fakeLiveKit) Remove(_ context.Context, room, identity string) error {
 func (f *fakeLiveKit) End(_ context.Context, room string) error {
 	f.ended = append(f.ended, room)
 	return f.actionErr
+}
+
+func (f *fakeLiveKit) MuteMicrophone(_ context.Context, room, identity string) error {
+	f.mutedOne = append(f.mutedOne, room+"/"+identity)
+	return f.actionErr
+}
+
+func (f *fakeLiveKit) MuteGuests(_ context.Context, room string) (int, error) {
+	f.mutedAll = append(f.mutedAll, room)
+	return f.guestsMuted, f.actionErr
 }
 
 func (f *fakeLiveKit) SetLocked(_ context.Context, _ string, locked bool) error {
@@ -400,6 +413,46 @@ func TestMemberActions(t *testing.T) {
 	if len(h.lk.locked) != 2 || !h.lk.locked[0] || h.lk.locked[1] {
 		t.Errorf("locked = %v", h.lk.locked)
 	}
+}
+
+func TestMute(t *testing.T) {
+	h := newHarness(t)
+	auth := []string{"Authorization", bearer(memberKey)}
+
+	rec := h.post("/api/rooms/standup/mute", `{"identity":"p_123"}`, auth...)
+	if rec.Code != http.StatusOK || decode[muteResponse](t, rec).Muted != 1 {
+		t.Errorf("mute one: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(h.lk.mutedOne) != 1 || h.lk.mutedOne[0] != "standup/p_123" {
+		t.Errorf("mutedOne = %v", h.lk.mutedOne)
+	}
+
+	h.lk.guestsMuted = 4
+	rec = h.post("/api/rooms/standup/mute", `{"all":true}`, auth...)
+	if rec.Code != http.StatusOK || decode[muteResponse](t, rec).Muted != 4 {
+		t.Errorf("mute all: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(h.lk.mutedAll) != 1 || h.lk.mutedAll[0] != "standup" {
+		t.Errorf("mutedAll = %v", h.lk.mutedAll)
+	}
+}
+
+func TestMuteNeedsAKeyAndOneTarget(t *testing.T) {
+	h := newHarness(t)
+	expectError(t, h.post("/api/rooms/standup/mute", `{"all":true}`), http.StatusUnauthorized, "invalid_key")
+	expectError(t, h.post("/api/rooms/standup/mute", `{"all":true}`, "Authorization", bearer("wrong-key-wrong-key")), http.StatusUnauthorized, "invalid_key")
+
+	auth := []string{"Authorization", bearer(memberKey)}
+	for _, body := range []string{`{}`, `{"identity":"p_1","all":true}`, `{"identity":"` + strings.Repeat("x", 129) + `"}`} {
+		expectError(t, h.post("/api/rooms/standup/mute", body, auth...), http.StatusBadRequest, "invalid_target")
+	}
+	expectError(t, h.post("/api/rooms/a_b/mute", `{"all":true}`, auth...), http.StatusBadRequest, "invalid_room")
+	if len(h.lk.mutedOne)+len(h.lk.mutedAll) != 0 {
+		t.Error("something was muted by an invalid request")
+	}
+
+	h.lk.actionErr = rtc.ErrNotFound
+	expectError(t, h.post("/api/rooms/standup/mute", `{"all":true}`, auth...), http.StatusNotFound, "not_found")
 }
 
 func TestMemberActionsRequireKey(t *testing.T) {

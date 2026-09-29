@@ -96,6 +96,7 @@ type fakeLiveKit struct {
 	responses map[string]string // method -> JSON body
 	status    map[string]int    // method -> HTTP status, default 200
 	requests  map[string]map[string]any
+	muted     []map[string]any // every MutePublishedTrack request, in order
 	claims    map[string]accessClaims
 }
 
@@ -130,6 +131,9 @@ func (f *fakeLiveKit) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var req map[string]any
 	_ = json.Unmarshal(body, &req)
 	f.requests[method] = req
+	if method == "MutePublishedTrack" {
+		f.muted = append(f.muted, req)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	if status := f.status[method]; status != 0 {
@@ -150,21 +154,22 @@ func TestPresence(t *testing.T) {
 		want         Presence
 	}{
 		{"room does not exist", `{"rooms":[]}`, "", Presence{}},
-		{"room without members", `{"rooms":[{"name":"x","metadata":"","numParticipants":1}]}`,
+		{"room without members", `{"rooms":[{"name":"x","metadata":""}]}`,
 			`{"participants":[{"state":"ACTIVE","attributes":{"role":"guest"}}]}`,
 			Presence{Room: Room{Participants: 1}}},
-		{"member present", `{"rooms":[{"name":"x","numParticipants":2}]}`,
+		{"member present", `{"rooms":[{"name":"x"}]}`,
 			`{"participants":[{"state":"ACTIVE","attributes":{"role":"guest"}},{"state":"JOINED","attributes":{"role":"member"}}]}`,
 			Presence{Room: Room{Participants: 2}, MemberPresent: true}},
 		{"member still joining", `{"rooms":[{"name":"x"}]}`,
-			`{"participants":[{"state":"JOINING","attributes":{"role":"member"}}]}`, Presence{MemberPresent: true}},
+			`{"participants":[{"state":"JOINING","attributes":{"role":"member"}}]}`,
+			Presence{Room: Room{Participants: 1}, MemberPresent: true}},
 		{"disconnected member does not count", `{"rooms":[{"name":"x"}]}`,
 			`{"participants":[{"state":"DISCONNECTED","attributes":{"role":"member"}}]}`, Presence{}},
 		{"participant without attributes", `{"rooms":[{"name":"x"}]}`,
-			`{"participants":[{"state":"ACTIVE"}]}`, Presence{}},
+			`{"participants":[{"state":"ACTIVE"}]}`, Presence{Room: Room{Participants: 1}}},
 		{"locked room", `{"rooms":[{"name":"x","metadata":"{\"locked\":true}"}]}`,
 			`{"participants":[{"state":"ACTIVE","attributes":{"role":"member"}}]}`,
-			Presence{Room: Room{Locked: true}, MemberPresent: true}},
+			Presence{Room: Room{Locked: true, Participants: 1}, MemberPresent: true}},
 		{"room with a preset", `{"rooms":[{"name":"x","metadata":"{\"quality\":\"low\"}"}]}`,
 			`{"participants":[]}`, Presence{Room: Room{Quality: QualityLow}}},
 		{"unknown preset is ignored", `{"rooms":[{"name":"x","metadata":"{\"quality\":\"ultra\"}"}]}`,
@@ -203,7 +208,8 @@ func TestParseQuality(t *testing.T) {
 
 func TestOpenRoom(t *testing.T) {
 	f, c := newFake(t)
-	f.responses["CreateRoom"] = `{"name":"standup","metadata":"{\"locked\":false,\"quality\":\"meeting\"}","numParticipants":3}`
+	f.responses["CreateRoom"] = `{"name":"standup","metadata":"{\"locked\":false,\"quality\":\"meeting\"}"}`
+	f.responses["ListParticipants"] = `{"participants":[{"state":"ACTIVE"},{"state":"ACTIVE"},{"state":"JOINING"},{"state":"DISCONNECTED"}]}`
 
 	room, err := c.OpenRoom(context.Background(), "standup", QualityLow, 12)
 	if err != nil {
@@ -303,6 +309,70 @@ func TestRemoveEndAndLock(t *testing.T) {
 	f.responses["ListRooms"] = `{"rooms":[]}`
 	if err := c.SetLocked(ctx, "gone", true); !errors.Is(err, ErrNotFound) {
 		t.Errorf("SetLocked on a missing room = %v, want ErrNotFound", err)
+	}
+}
+
+const roomOfThree = `{"participants":[
+ {"identity":"host","state":"ACTIVE","attributes":{"role":"member"},"tracks":[{"sid":"TR_h","source":"MICROPHONE"}]},
+ {"identity":"ann","state":"ACTIVE","attributes":{"role":"guest"},"tracks":[{"sid":"TR_a1","source":"CAMERA"},{"sid":"TR_a2","source":"MICROPHONE"}]},
+ {"identity":"bob","state":"ACTIVE","attributes":{"role":"guest"},"tracks":[{"sid":"TR_b","source":"MICROPHONE","muted":true}]},
+ {"identity":"cy","state":"ACTIVE","attributes":{"role":"guest"},"tracks":[{"sid":"TR_c","source":"CAMERA"}]},
+ {"identity":"dee","state":"DISCONNECTED","attributes":{"role":"guest"},"tracks":[{"sid":"TR_d","source":"MICROPHONE"}]}
+]}`
+
+func TestMuteMicrophone(t *testing.T) {
+	f, c := newFake(t)
+	f.responses["ListParticipants"] = roomOfThree
+	ctx := context.Background()
+
+	if err := c.MuteMicrophone(ctx, "standup", "ann"); err != nil {
+		t.Fatalf("MuteMicrophone: %v", err)
+	}
+	if len(f.muted) != 1 {
+		t.Fatalf("muted = %v", f.muted)
+	}
+	got := f.muted[0]
+	if got["room"] != "standup" || got["identity"] != "ann" || got["trackSid"] != "TR_a2" || got["muted"] != true {
+		t.Errorf("request = %v; want ann's microphone, not her camera", got)
+	}
+
+	// Already muted, or no microphone: nothing to do, and no error.
+	f.muted = nil
+	for _, identity := range []string{"bob", "cy"} {
+		if err := c.MuteMicrophone(ctx, "standup", identity); err != nil {
+			t.Errorf("MuteMicrophone(%s): %v", identity, err)
+		}
+	}
+	if len(f.muted) != 0 {
+		t.Errorf("muted %v, want nothing", f.muted)
+	}
+
+	if err := c.MuteMicrophone(ctx, "standup", "nobody"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("unknown participant = %v, want ErrNotFound", err)
+	}
+}
+
+func TestMuteGuests(t *testing.T) {
+	f, c := newFake(t)
+	f.responses["ListParticipants"] = roomOfThree
+
+	n, err := c.MuteGuests(context.Background(), "standup")
+	if err != nil {
+		t.Fatalf("MuteGuests: %v", err)
+	}
+	// Only ann: the host is a member, bob is already muted, cy has no
+	// microphone and dee has left.
+	if n != 1 || len(f.muted) != 1 || f.muted[0]["identity"] != "ann" {
+		t.Errorf("muted %d: %v", n, f.muted)
+	}
+}
+
+func TestMuteRoomVanishes(t *testing.T) {
+	f, c := newFake(t)
+	f.status["ListParticipants"] = http.StatusNotFound
+	f.responses["ListParticipants"] = `{"code":"not_found","msg":"room does not exist"}`
+	if _, err := c.MuteGuests(context.Background(), "gone"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("MuteGuests = %v, want ErrNotFound", err)
 	}
 }
 

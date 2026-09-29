@@ -30,6 +30,8 @@ type LiveKit interface {
 	OpenRoom(ctx context.Context, room string, quality rtc.Quality, maxParticipants int) (rtc.Room, error)
 	Remove(ctx context.Context, room, identity string) error
 	End(ctx context.Context, room string) error
+	MuteMicrophone(ctx context.Context, room, identity string) error
+	MuteGuests(ctx context.Context, room string) (int, error)
 	SetLocked(ctx context.Context, room string, locked bool) error
 }
 
@@ -75,6 +77,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/join", s.limited(s.join))
 	mux.HandleFunc("POST /api/rooms/{room}/kick", s.limited(s.kick))
 	mux.HandleFunc("POST /api/rooms/{room}/end", s.limited(s.end))
+	mux.HandleFunc("POST /api/rooms/{room}/mute", s.limited(s.mute))
 	mux.HandleFunc("POST /api/rooms/{room}/lock", s.limited(s.lock))
 	mux.HandleFunc("GET /", s.static)
 	return s.recoverer(s.securityHeaders(s.logRequests(mux)))

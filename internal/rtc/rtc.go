@@ -146,20 +146,15 @@ func (c *Client) Presence(ctx context.Context, room string) (Presence, error) {
 	}
 	presence := Presence{Room: info}
 
-	var participants struct {
-		Participants []struct {
-			State      string            `json:"state"`
-			Attributes map[string]string `json:"attributes"`
-		} `json:"participants"`
-	}
-	err = c.call(ctx, "ListParticipants", room, map[string]any{"room": room}, &participants)
+	people, err := c.participants(ctx, room)
 	if errors.Is(err, ErrNotFound) {
 		return presence, nil
 	}
 	if err != nil {
 		return Presence{}, err
 	}
-	for _, p := range participants.Participants {
+	presence.Participants = countConnected(people)
+	for _, p := range people {
 		if p.State != "DISCONNECTED" && p.Attributes[RoleAttribute] == string(RoleMember) {
 			presence.MemberPresent = true
 			break
@@ -185,7 +180,24 @@ func (c *Client) OpenRoom(ctx context.Context, room string, quality Quality, max
 	if err != nil {
 		return Room{}, err
 	}
-	return created.info(), nil
+	info := created.info()
+	people, err := c.participants(ctx, room)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return Room{}, err
+	}
+	info.Participants = countConnected(people)
+	return info, nil
+}
+
+// countConnected counts the people who hold a place in a room.
+func countConnected(people []participant) int {
+	n := 0
+	for _, p := range people {
+		if p.State != "DISCONNECTED" {
+			n++
+		}
+	}
+	return n
 }
 
 // lookup finds room in LiveKit's room list.
@@ -204,18 +216,98 @@ func (c *Client) lookup(ctx context.Context, room string) (Room, bool, error) {
 
 // liveRoom is the part of LiveKit's room description that PlainCall reads.
 type liveRoom struct {
-	Metadata        string `json:"metadata"`
-	NumParticipants int    `json:"numParticipants"`
+	Metadata string `json:"metadata"`
 }
 
+// info reads the room's flags. LiveKit does not report who is in the room here,
+// so Participants is left for the caller to fill in.
 func (r liveRoom) info() Room {
 	m := parseMetadata(r.Metadata)
-	return Room{Locked: m.Locked, Quality: m.Quality, Participants: r.NumParticipants}
+	return Room{Locked: m.Locked, Quality: m.Quality}
 }
 
 // Remove disconnects one participant from room.
 func (c *Client) Remove(ctx context.Context, room, identity string) error {
 	return c.call(ctx, "RemoveParticipant", room, map[string]any{"room": room, "identity": identity}, nil)
+}
+
+// MuteMicrophone mutes one participant's microphone. It does nothing if they
+// have none or it is already muted. The person can unmute themselves.
+func (c *Client) MuteMicrophone(ctx context.Context, room, identity string) error {
+	people, err := c.participants(ctx, room)
+	if err != nil {
+		return err
+	}
+	for _, p := range people {
+		if p.Identity == identity {
+			return c.muteMicrophone(ctx, room, p)
+		}
+	}
+	return fmt.Errorf("livekit MutePublishedTrack: participant does not exist: %w", ErrNotFound)
+}
+
+// MuteGuests mutes the microphone of everyone in room except members, and
+// returns how many were muted.
+func (c *Client) MuteGuests(ctx context.Context, room string) (int, error) {
+	people, err := c.participants(ctx, room)
+	if err != nil {
+		return 0, err
+	}
+	muted := 0
+	for _, p := range people {
+		if p.Attributes[RoleAttribute] == string(RoleMember) || p.State == "DISCONNECTED" || p.microphone() == nil {
+			continue
+		}
+		if err := c.muteMicrophone(ctx, room, p); err != nil {
+			return muted, err
+		}
+		muted++
+	}
+	return muted, nil
+}
+
+func (c *Client) muteMicrophone(ctx context.Context, room string, p participant) error {
+	mic := p.microphone()
+	if mic == nil {
+		return nil
+	}
+	return c.call(ctx, "MutePublishedTrack", room, map[string]any{
+		"room": room, "identity": p.Identity, "trackSid": mic.SID, "muted": true,
+	}, nil)
+}
+
+type participant struct {
+	Identity   string            `json:"identity"`
+	State      string            `json:"state"`
+	Attributes map[string]string `json:"attributes"`
+	Tracks     []track           `json:"tracks"`
+}
+
+type track struct {
+	SID    string `json:"sid"`
+	Source string `json:"source"`
+	Muted  bool   `json:"muted"`
+}
+
+// microphone returns the participant's microphone track if it is publishing
+// and not already muted.
+func (p participant) microphone() *track {
+	for i := range p.Tracks {
+		if p.Tracks[i].Source == "MICROPHONE" && !p.Tracks[i].Muted {
+			return &p.Tracks[i]
+		}
+	}
+	return nil
+}
+
+func (c *Client) participants(ctx context.Context, room string) ([]participant, error) {
+	var listed struct {
+		Participants []participant `json:"participants"`
+	}
+	if err := c.call(ctx, "ListParticipants", room, map[string]any{"room": room}, &listed); err != nil {
+		return nil, err
+	}
+	return listed.Participants, nil
 }
 
 // End closes room and disconnects everyone in it.
